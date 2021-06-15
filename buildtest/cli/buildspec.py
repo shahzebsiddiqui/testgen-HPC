@@ -6,15 +6,23 @@ from tabulate import tabulate
 from termcolor import colored
 from jsonschema.exceptions import ValidationError
 from buildtest.buildsystem.parser import BuildspecParser
-from buildtest.config import check_settings, BuildtestConfiguration
 from buildtest.defaults import (
     BUILDSPEC_CACHE_FILE,
+    BUILDSPEC_ERROR_FILE,
     BUILDSPEC_DEFAULT_PATH,
-    DEFAULT_SETTINGS_FILE,
+    BUILDTEST_BUILDSPEC_DIR,
 )
 from buildtest.executors.setup import BuildExecutor
-from buildtest.exceptions import BuildTestError
-from buildtest.utils.file import is_dir, is_file, walk_tree, resolve_path, read_file
+from buildtest.exceptions import BuildTestError, BuildspecError
+from buildtest.utils.file import (
+    create_dir,
+    is_dir,
+    is_file,
+    load_json,
+    read_file,
+    resolve_path,
+    walk_tree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +36,11 @@ class BuildspecCache:
 
     def __init__(
         self,
+        configuration,
         rebuild=False,
         filterfields=None,
         formatfields=None,
         roots=None,
-        settings_file=None,
     ):
         """The initializer method for BuildspecCache class is responsible for
         loading and finding buildspecs into buildspec cache. This method is called
@@ -48,8 +56,10 @@ class BuildspecCache:
         :type roots: list, required
         """
 
-        self.settings = settings_file or DEFAULT_SETTINGS_FILE
-        self.configuration = check_settings(self.settings, executor_check=True)
+        if not is_dir(BUILDTEST_BUILDSPEC_DIR):
+            create_dir(BUILDTEST_BUILDSPEC_DIR)
+
+        self.configuration = configuration
         self.filter = filterfields
         self.format = formatfields
         # if --root is not specified we set to empty list instead of None
@@ -127,8 +137,7 @@ class BuildspecCache:
         if not is_file(BUILDSPEC_CACHE_FILE):
             self.build_cache()
 
-        with open(BUILDSPEC_CACHE_FILE, "r") as fd:
-            self.cache = json.loads(fd.read())
+        self.cache = load_json(BUILDSPEC_CACHE_FILE)
 
     def _discover_buildspecs(self):
         """This method retrieves buildspecs based on ``self.paths`` which is a
@@ -164,11 +173,8 @@ class BuildspecCache:
         print(f"Updating buildspec cache file: {BUILDSPEC_CACHE_FILE}")
         # write invalid buildspecs to file if any found
         if self.invalid_buildspecs:
-            buildspec_error_file = os.path.join(
-                os.path.dirname(BUILDSPEC_CACHE_FILE), "buildspec.error"
-            )
 
-            with open(buildspec_error_file, "w") as fd:
+            with open(BUILDSPEC_ERROR_FILE, "w") as fd:
                 for file, msg in self.invalid_buildspecs.items():
 
                     fd.write(f"buildspec file: {file} \n")
@@ -183,7 +189,7 @@ class BuildspecCache:
                     fd.write("\n\n")
                     fd.write("{:=<80} \n".format(""))
 
-            print(f"Writing invalid buildspecs to file: {buildspec_error_file} ")
+            print(f"Writing invalid buildspecs to file: {BUILDSPEC_ERROR_FILE} ")
 
         print("\n\n")
 
@@ -195,8 +201,7 @@ class BuildspecCache:
         valid_buildspecs = []
         self.count = 0
 
-        configuration = BuildtestConfiguration(self.settings)
-        buildexecutor = BuildExecutor(configuration)
+        buildexecutor = BuildExecutor(self.configuration)
 
         for buildspec in buildspecs:
             self.count += 1
@@ -206,7 +211,7 @@ class BuildspecCache:
             # any buildspec that raises SystemExit or ValidationError imply
             # buildspec is not valid, we add this to invalid list along with
             # error message and skip to next buildspec
-            except (BuildTestError, ValidationError) as err:
+            except (BuildTestError, BuildspecError, ValidationError) as err:
                 self.invalid_buildspecs[buildspec] = err
                 continue
 
@@ -250,11 +255,12 @@ class BuildspecCache:
         self.update_cache["executor"] = {}
         self.update_cache["tags"] = {}
         self.update_cache["maintainers"] = {}
+        self.update_cache["paths"] = self.paths
 
         self.invalid_buildspecs = {}
 
-        for path in self.paths:
-            self.update_cache[path] = {}
+        # for path in self.paths:
+        #    self.update_cache[path] = {}
 
         buildspecs = self._discover_buildspecs()
         print("Discovered Buildspecs")
@@ -675,7 +681,7 @@ class BuildspecCache:
             print(path)
 
 
-def buildspec_find(args, settings_file):
+def buildspec_find(args, configuration):
     """Entry point for ``buildtest buildspec find`` command"""
 
     cache = BuildspecCache(
@@ -683,7 +689,7 @@ def buildspec_find(args, settings_file):
         filterfields=args.filter,
         formatfields=args.format,
         roots=args.root,
-        settings_file=settings_file,
+        configuration=configuration,
     )
 
     # buildtest buildspec find --tags

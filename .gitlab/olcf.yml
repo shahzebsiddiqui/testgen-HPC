@@ -24,3 +24,4 @@ ascent_pr_regression_test:
     - bash <(curl -s https://codecov.io/bash)
     - source deactivate
     - conda env remove -p $CI_PROJECT_DIR/.conda -y
+

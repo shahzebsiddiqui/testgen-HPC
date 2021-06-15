@@ -18,10 +18,9 @@ Which configuration file does buildtest read?
 
 buildtest will read configuration files in the following order:
 
-- Command line ``buildtest build -c <buildtest-configuration>.yml``
+- Command line ``buildtest -c <config>.yml build``
 - User Configuration - ``$HOME/.buildtest/config.yml``
 - Default Configuration - ``$BUILDTEST_ROOT/buildtest/settings/config.yml``
-
 
 .. _default_configuration:
 
@@ -69,7 +68,7 @@ In this example we defined two systems `machine`, `machine2` with the following 
       machine2:
         hostnames: ['BOB|JOHN']
 
-In this example, none of the host entries match with hostname `DOE-7086392.local` so we get an error
+In this example, none of the host entries match with hostname **DOE-7086392.local** so we get an error
 since buildtest needs to detect a system before proceeding.
 
 .. code-block:: shell
@@ -93,12 +92,6 @@ Alternately, you can use regular expression to condense this list
     system:
       mycluster:
         hostnames: ["login[1-3]"]
-
-If your system supports module-system (`environment-modules <https://modules.readthedocs.io/en/latest/>`_ or `Lmod <Mhttps://lmod.readthedocs.io/en/latest/index.html>`_) you
-will need to define the ``moduletool`` property. For more details see :ref:`configuring module tool <module_configuration>`. The
-``load_default_buildspecs`` is a boolean value that determines if buildtest will load the default
-buildspecs into buildspec cache via ``buildtest buildspec find`` command. To configure this property see :ref:`load default buildspecs <load_default_buildspecs>`.
-
 
 .. _module_configuration:
 
@@ -169,7 +162,7 @@ Executor Declaration
 
 The ``executors`` is a JSON `object`, that defines one or more executors. The executors
 are grouped by their type followed by executor name. In this example we define two
-local executors ``bash``, ``sh`` and one slurm executor called ``regular```:
+local executors ``bash``, ``sh`` and one slurm executor called ``regular``:
 
 .. code-block:: yaml
 
@@ -188,8 +181,7 @@ local executors ``bash``, ``sh`` and one slurm executor called ``regular```:
             queue: regular
 
 The **LocalExecutors** are defined in section `local` where each executor must be
-unique name. The *LocalExecutors* can be ``bash``, ``sh``, ``csh``, ``tcsh`` and ``python`` shell and they are
-referenced in buildspec using ``executor`` field in the following format:
+unique name and they are referenced in buildspec using ``executor`` field in the following format:
 
 .. code-block:: yaml
 
@@ -202,7 +194,7 @@ cluster, you would specify the following in the buildspec:
 
      executor: generic.local.bash
 
-In our example configuration, we defined a local `bash` executor as follows:
+In our example configuration, we defined a ``bash`` executor as follows:
 
 .. code-block:: yaml
 
@@ -260,28 +252,24 @@ buildtest will resolve variable expansion to get real path on filesystem.
     logdir: $HOME/Documents/buildtest/var/logs
 
 
-``logdir`` is not required in configuration, if it's not specified buildtest will write logs
+``logdir`` is not required field in configuration, if it's not specified then buildtest will write logs
 based on `tempfile <https://docs.python.org/3/library/tempfile.html>`_ library which may vary
 based on platform (Linux, Mac).
-
-For instance, on Mac the directory path may be something as follows::
-
-    /var/folders/1m/_jjv09h17k37mkktwnmbkmj0002t_q/T/buildtest_dy_xu1eb.log
 
 The buildtest logs will start with **buildtest_** followed by random identifier with
 a **.log** extension.
 
 buildtest will write the same log file in **$BUILDTEST_ROOT/buildtest.log** which can
-be used to fetch last build log. This is convenient if you don't remember the directory
+be used to fetch last build log. This can be convenient if you don't remember the directory
 path to log file.
 
 
-before_script and after_script for executors
----------------------------------------------
+before_script for executors
+----------------------------
 
-Often times, you may want to run a set of commands before or after tests for more than
-one test. For this reason, we support ``before_script`` and ``after_script`` section
-per executor which is of string type where you can specify multi-line commands.
+Often times, you may want to run a set of commands for a group of tests before running a test. We
+can do this using this using the ``before_script`` field which is defined in each executorthat is
+of string type that expects bash commands.
 
 This can be demonstrated with an executor name **local.e4s** responsible for
 building `E4S Testsuite <https://github.com/E4S-Project/testsuite>`_
@@ -301,7 +289,7 @@ building `E4S Testsuite <https://github.com/E4S-Project/testsuite>`_
 
 The `e4s` executor attempts to clone E4S Testsuite in $SCRATCH and activate
 a spack environment and run the initialize script ``source setup.sh``. buildtest
-will write a ``before_script.sh`` and ``after_script.sh`` for every executor.
+will write a ``before_script.sh`` for every executor.
 This can be found in ``var/executors`` directory as shown below
 
 .. code-block:: console
@@ -310,21 +298,17 @@ This can be found in ``var/executors`` directory as shown below
     var/executors/
     |-- local.bash
     |   |-- after_script.sh
-    |   `-- before_script.sh
     |-- local.e4s
     |   |-- after_script.sh
-    |   `-- before_script.sh
     |-- local.python
     |   |-- after_script.sh
-    |   `-- before_script.sh
     |-- local.sh
     |   |-- after_script.sh
-    |   `-- before_script.sh
 
 
-    4 directories, 8 files
+    4 directories, 4 files
 
-The ``before_script`` and ``after_script`` field is available for all executors and
+The ``before_script`` field is available for all executors and
 if its not specified the file will be empty. Every test will source these scripts for
 the appropriate executor.
 
@@ -341,8 +325,7 @@ Shown below is the configuration file used at Cori.
 Default Executor Settings
 ---------------------------
 
-One can define default executor configurations for all executors using the ``defaults`` property. Shown below is an
-example
+One can define default executor configurations for all executors using the ``defaults`` property.
 
 .. code-block:: yaml
 
@@ -356,18 +339,28 @@ example
 The `launcher` field is applicable for batch executors in this
 case, ``launcher: sbatch`` inherits **sbatch** as the job launcher for all slurm executors.
 
-The ``pollinterval`` field is used  to poll jobs at set interval in seconds
-when job is active in queue. The ``max_pend_time`` is **maximum** time job can be pending
-within an executor, if it exceeds the limit buildtest will cancel the job. For more details
-on `max_pend_time` click :ref:`here <max_pend_time>`.
-
-`pollinterval`, `launcher` and `max_pend_time` have no effect on local executors.
 The ``account: nstaff`` will instruct buildtest to charge all jobs to account
 ``nstaff`` from Slurm Executors. The ``account`` option can be set in ``defaults``
 field to all executors or defined per executor instance which overrides the default value.
 
+Poll Interval
+----------------
+
+The ``pollinterval`` field is used  to poll jobs at set interval in seconds
+when job is active in queue. The poll interval can be configured on command line
+using ``buildtest build --poll-interval`` which overrides the configuration value.
+
+
+
+
+`pollinterval`, `launcher` and `max_pend_time` have no effect on local executors.
+
+
 Max Pend Time
 ---------------
+
+The ``max_pend_time`` is **maximum** time job can be pending
+within an executor, if it exceeds the limit buildtest will cancel the job.
 
 The **max_pend_time** option can be overridden per executor level for example the
 section below overrides the default to 300 seconds:
@@ -381,16 +374,14 @@ section below overrides the default to 300 seconds:
           max_pend_time: 300
 
 The ``max_pend_time`` is used to cancel job only if job is pending in queue, it has
-no impact if job is running. buildtest starts a timer at job submission and every poll interval (``pollinterval`` field)
-checks if job has exceeded **max_pend_time** only if job is in **PENDING** (SLURM)
-or **PEND** (LSF) state. If job pendtime exceeds `max_pend_time` limit, buildtest will
-cancel job using ``scancel`` or ``bkill`` depending on the scheduler. Buildtest
-will remove cancelled jobs from poll queue, in addition cancelled jobs won't be
+no impact if job is running. buildtest starts a timer at job submission and every poll interval
+(``pollinterval`` field) checks if job has exceeded **max_pend_time** only if job is pending.
+If job pendtime exceeds `max_pend_time` limit, buildtest will
+cancel job the job using the appropriate scheduler command like (``scancel``, ``bkill``, ``qdel``).
+Buildtestwill remove cancelled jobs from poll queue, in addition cancelled jobs won't be
 reported in test report.
 
-You may specify a ``description`` in each executor instance for documentation purpose.
-This field has no impact on buildtest
-
+For more details on `max_pend_time` click :ref:`here <max_pend_time>`.
 
 Specifying QoS (Slurm)
 -----------------------
@@ -461,10 +452,12 @@ the name of PBS queue that is available in your system.
                 cxx: /usr/bin/g++
                 fc: /usr/bin/gfortran
 
-buildtest will detect the PBS queues in your system and determine if queues are valid
-and queue state `enabled` or `started` are set to **True**. In this example below, buildtest will
-query the queue configuration and check the output of all pbs executors with this JSON format. In example
-below we have one queue `workq` defined that is ``enabled`` and ``started``.
+buildtest will detect the PBS queues in your system and determine if queues are active
+and enabled before submitting job to scheduler. buildtest will run ``qstat -Q -f -F json`` command to check for
+queue state which reports in JSON format and check if queue has the fields ``enabled: "True"`` or ``started: "True"`` set
+in the queue definition. If these values are not set, buildtest will raise an exception.
+
+Shown below is an example with one queue **workq** that is ``enabled`` and ``started``.
 
 .. code-block:: console
     :emphasize-lines: 6-7, 17-18
@@ -499,3 +492,32 @@ PBS Limitation
 
 .. Note:: Please note that buildtest PBS support relies on job history set because buildtest needs to query job after completion using `qstat -x`. This
           can be configured using ``qmgr`` by setting ``set server job_history_enable=True``. For more details see section **13.15.5.1 Enabling Job History** in `PBS 2020.1 Admin Guide <https://www.altair.com/pdfs/pbsworks/PBSAdminGuide2020.1.pdf>`_
+
+.. _cdash_configuration:
+
+CDASH Configuration
+--------------------
+
+buildtest can be configured to push test to `CDASH <https://www.kitware.com/cdash/project/about.html>`_. The default configuration
+file provides a CDASH configuration for buildtest project is the following.
+
+.. code-block:: yaml
+
+    cdash:
+      url: https://my.cdash.org/
+      project: buildtest
+      site: generic
+      buildname: tutorials
+
+The cdash section can be summarized as follows:
+
+ - ``url``: URL to CDASH server
+
+ - ``project``: Project Name in CDASH server
+
+ - ``site``: Site name that shows up in CDASH entry. This should be name of your system name
+
+ - ``buildname``: Build Name that shows up in CDASH, this can be any name you want.
+
+The cdash settings can be used with ``buildtest cdash`` command. For more details
+see :ref:`cdash_integration`.

@@ -24,6 +24,8 @@ def build_helper():
         "buildtest buildspec find --help",
         "buildtest report --help",
         "buildtest inspect --help",
+        "buildtest cdash --help",
+        "buildtest cdash upload --help",
     ]
     for cmd in help_cmds:
         out = run(cmd)
@@ -33,7 +35,7 @@ def build_helper():
 
 
 def run(query):
-    """The ``run()`` method will execute the command and retrieve the output as part of documentation examples """
+    """The ``run()`` method will execute the command and retrieve the output as part of documentation examples"""
 
     print(f"Executing Command: {query}")
     out = subprocess.check_output(query, shell=True, universal_newlines=True)
@@ -75,7 +77,9 @@ def tutorial():
         f"{os.path.join(prefix, 'stage_build.txt')}": "buildtest build -b tutorials/vars.yml --stage=build",
         f"{os.path.join(prefix, 'rebuild.txt')}": "buildtest build -b tutorials/python-shell.yml --rebuild=3",
         f"{os.path.join(prefix, 'rebuild-tags.txt')}": "buildtest build --tags fail --rebuild=2",
-        f"{os.path.join(prefix, 'debug-mode.txt')}": "buildtest -d DEBUG build -b tutorials/invalid_executor.yml",
+        f"{os.path.join(prefix, 'regex-executor-script.txt')}": "buildtest build -b tutorials/executor_regex_script.yml",
+        f"{os.path.join(prefix, 'runtime-status.txt')}": "buildtest build -b tutorials/runtime_status_test.yml",
+        f"{os.path.join(prefix, 'runtime-status-report.txt')}": "buildtest report --filter buildspec=tutorials/runtime_status_test.yml --format name,id,state,runtime --latest",
     }
 
     generate_tests(prefix, cmd_dict)
@@ -140,6 +144,8 @@ def introspection_cmds():
         "buildtest_inspect_list.txt": "buildtest inspect list",
         "buildtest_inspect_names.txt": "buildtest inspect name shell_options",
         "buildtest_inspect_multi_names.txt": "buildtest inspect name bash_shell python_hello",
+        "buildtest_history_list.txt": "buildtest history list",
+        "buildtest_history_query.txt": "buildtest history query 0",
     }
 
     for k, v in cmd_dict.items():

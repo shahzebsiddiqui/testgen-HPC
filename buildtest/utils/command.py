@@ -1,3 +1,4 @@
+# import locale
 import os
 import subprocess
 import shlex
@@ -74,7 +75,7 @@ class BuildTestCommand:
     def __init__(self, cmd=None):
 
         cmd = cmd or []
-        self.returncode = None
+        self._returncode = None
         self.out = []
         self.err = []
 
@@ -106,7 +107,7 @@ class BuildTestCommand:
         executable = shutil.which(self.cmd[0])
         if not executable:
             self.err = ["%s not found." % self.cmd[0]]
-            self.returncode = 1
+            self._returncode = 1
             return (self.out, self.err)
 
         # remove the original executable
@@ -129,38 +130,36 @@ class BuildTestCommand:
             while returncode is None:
                 returncode = process.poll()
 
-        # Get the remainder of lines, add return code
-        # self.out += ["%s\n" % x for x in self.decode(capture.out).split("\n") if x]
-        # self.err += ["%s\n" % x for x in self.decode(capture.err).split("\n") if x]
+        # Get the remainder of lines, add return code. The self.decode avoids UTF-8 decode error
+        self.out += ["%s\n" % x for x in self.decode(capture.out).split("\n") if x]
+        self.err += ["%s\n" % x for x in self.decode(capture.err).split("\n") if x]
 
-        self.out += ["%s\n" % x for x in capture.out.split("\n") if x]
-        self.err += ["%s\n" % x for x in capture.err.split("\n") if x]
+        # self.out += ["%s\n" % x for x in capture.out.split("\n") if x]
+        # self.err += ["%s\n" % x for x in capture.err.split("\n") if x]
         # Cleanup capture files and save final return code
         capture.cleanup()
-        self.returncode = returncode
+        self._returncode = returncode
 
         return (self.out, self.err)
 
-    def returnCode(self):
+    def returncode(self):
         """Returns the return code from shell command
         :rtype: int
         """
 
-        return self.returncode
+        return self._returncode
 
-    """
     def decode(self, line):
-        Given a line of output (error or regular) decode using the
+        """Given a line of output (error or regular) decode using the
         system default, if appropriate
-        
-        loc = locale.getdefaultlocale()[1]
+        """
+        # loc = locale.getdefaultlocale()[1]
 
         try:
-            line = line.decode(loc)
+            line = line.decode("utf-8")
         except Exception:
             pass
         return line
-    """
 
     def get_output(self):
         """Returns the output from shell command
@@ -173,3 +172,9 @@ class BuildTestCommand:
         :rtype: str
         """
         return self.err
+
+    def get_command(self):
+        """Returns the executed command
+        :rtype: str
+        """
+        return " ".join(self.cmd)

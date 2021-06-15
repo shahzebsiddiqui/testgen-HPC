@@ -32,34 +32,20 @@ Status
 .. |regressiontest| image:: https://github.com/buildtesters/buildtest/workflows/regressiontest/badge.svg
     :target: https://github.com/buildtesters/buildtest/actions
 
-Source Code
-------------
-
-- buildtest framework: https://github.com/buildtesters/buildtest
-
-Test Repositories
-------------------
-
-- Cori @ NERSC: https://github.com/buildtesters/buildtest-cori
 
 Useful Links
 -------------
 
-- Documentation: http://buildtest.rtfd.io/
-
-- Schema Docs: https://buildtesters.github.io/buildtest/
-
-- ReadTheDocs: https://readthedocs.org/projects/buildtest/
-
-- CodeCov: https://codecov.io/gh/buildtesters/buildtest
-
-- CodeFactor: https://www.codefactor.io/repository/github/buildtesters/buildtest
-
-- Snyk: https://app.snyk.io/org/buildtesters/
-
-- Slack Channel: http://hpcbuildtest.slack.com
-
-- Slack Invite: https://hpcbuildtest.herokuapp.com
+1. Source Code: https://github.com/buildtesters/buildtest
+2. Documentation: http://buildtest.rtfd.io/
+3. Schema Docs: https://buildtesters.github.io/buildtest/
+4. ReadTheDocs: https://readthedocs.org/projects/buildtest/
+5. CodeCov: https://codecov.io/gh/buildtesters/buildtest
+6. Slack Channel: http://hpcbuildtest.slack.com
+7. Slack Invite: https://hpcbuildtest.herokuapp.com
+8. CodeFactor: https://www.codefactor.io/repository/github/buildtesters/buildtest
+9. Snyk: https://app.snyk.io/org/buildtesters/
+10. Cori Test Repository: https://github.com/buildtesters/buildtest-cori
 
 Description
 ------------
@@ -69,11 +55,12 @@ a testing framework to help HPC sites write test for their system as part of the
 routine acceptance & regression test. buildtest provides a YAML interface to write tests
 which buildtest can validate and generate shell scripts that can run on your HPC system.
 The test template (YAML) is called **buildspec** which can define one or more test instance
-that is validated by a `json schema <https://json-schema.org/>`_. buildtest supports the following batch schedulers
-for job submission: `IBM Spectrum LSF <https://www.ibm.com/support/knowledgecenter/SSWRJV_10.1.0/lsf_welcome/lsf_welcome.html>`_,
-`Slurm <https://slurm.schedmd.com/>`_, and `Cobalt <https://trac.mcs.anl.gov/projects/cobalt/>`_. We
-publish the schema documentation, json schemas, and schema examples at https://buildtesters.github.io/buildtest/
-which is useful when you are :ref:`writing buildspecs <writing_buildspecs>`.
+that is validated by a `json schema <https://json-schema.org/>`_. buildtest supports the following batch schedulers:
+`IBM Spectrum LSF <https://www.ibm.com/support/knowledgecenter/SSWRJV_10.1.0/lsf_welcome/lsf_welcome.html>`_,
+`Slurm <https://slurm.schedmd.com/>`_, `PBS <https://www.openpbs.org/>`_ and
+`Cobalt <https://trac.mcs.anl.gov/projects/cobalt/>`_. We publish the schema documentation, json schemas,
+and schema examples at https://buildtesters.github.io/buildtest/ which is useful when you are
+:ref:`writing buildspecs <writing_buildspecs>`.
 
 To get started with buildtest, please see :ref:`installing buildtest <Setup>`  and
 :ref:`getting started guide <getting_started>`.

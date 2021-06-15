@@ -1,4 +1,4 @@
-| |license| |docs| |codecov| |slack| |release| |ascent_pipeline_status| |cori_pipeline_status| |installation| |regressiontest| |gh_pages_master| |gh_pages_devel| |checkurls| |dailyurlcheck| |codefactor| |blackformat|  |black| |issues| |open_pr| |commit_activity_yearly| |commit_activity_monthly| |core_infrastructure| |zenodo|
+| |license| |docs| |codecov| |slack| |release| |installation| |regressiontest| |gh_pages_master| |gh_pages_devel| |checkurls| |dailyurlcheck| |codefactor| |blackformat|  |black| |issues| |open_pr| |commit_activity_yearly| |commit_activity_monthly| |core_infrastructure| |zenodo|
 
 .. |docs| image:: https://readthedocs.org/projects/buildtest/badge/?version=latest
     :alt: Documentation Status
@@ -9,12 +9,6 @@
     :target: http://hpcbuildtest.slack.com
 
 .. |license| image:: https://img.shields.io/github/license/buildtesters/buildtest.svg
-
-.. |ascent_pipeline_status| image::  https://code.ornl.gov/ecpcitest/buildtest/badges/devel/pipeline.svg
-   :target: https://code.ornl.gov/ecpcitest/buildtest/-/commits/devel
- 
-.. |cori_pipeline_status| image:: https://software.nersc.gov/siddiq90/buildtest/badges/devel/pipeline.svg
-   :target: https://software.nersc.gov/siddiq90/buildtest/-/commits/devel
 
 .. |release| image:: https://img.shields.io/github/v/release/buildtesters/buildtest.svg
    :target: https://github.com/buildtesters/buildtest/releases
@@ -73,7 +67,7 @@ for their system. In buildtest, you will write tests in `YAML <https://yaml.org/
 called **Buildspecs** which is a test recipe used by buildtest for generating test scripts.
 buildtest will process *buildspecs* and automatically create shell-scripts and run them
 on your system. buildtest supports `IBM Spectrum LSF <https://www.ibm.com/support/knowledgecenter/SSWRJV_10.1.0/lsf_welcome/lsf_welcome.html>`_,
-`Slurm <https://slurm.schedmd.com/>`_, and `Cobalt <https://trac.mcs.anl.gov/projects/cobalt/>`_ batch scheduler for job submission.
+`Slurm <https://slurm.schedmd.com/>`_, `PBS <https://www.openpbs.org/>`_ and `Cobalt <https://trac.mcs.anl.gov/projects/cobalt/>`_ batch scheduler for job submission.
 buildtest makes use of `jsonschema <https://json-schema.org/>`_ to define structure of buildspecs used for validating buildspecs. 
 
 If you want to learn more about buildtest read https://buildtest.readthedocs.io/en/latest/what_is_buildtest.html.
@@ -89,7 +83,7 @@ Installing buildtest, is relatively easy. Just clone this repo and source the se
     source setup.sh
 
 
-For more details see `installing buildtest <https://buildtest.readthedocs.io/en/latest/installing_buildtest.html>`_.
+For more details see `Installing buildtest <https://buildtest.readthedocs.io/en/latest/installing_buildtest.html>`_.
 
 
 Schema Development

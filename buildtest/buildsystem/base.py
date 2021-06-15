@@ -6,6 +6,7 @@ is implemented as separate Builder.
 ScriptBuilder class implements 'type: script'
 CompilerBuilder class implements 'type: compiler'
 """
+import datetime
 import getpass
 import logging
 import os
@@ -13,9 +14,11 @@ import re
 import shutil
 import socket
 import stat
-import sys
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
+from buildtest.defaults import BUILDTEST_EXECUTOR_DIR
+from buildtest.exceptions import ExecutorError
 from buildtest.buildsystem.batch import (
     SlurmBatchScript,
     LSFBatchScript,
@@ -23,6 +26,7 @@ from buildtest.buildsystem.batch import (
     PBSBatchScript,
 )
 from buildtest.schemas.defaults import schema_table
+from buildtest.utils.command import BuildTestCommand
 from buildtest.utils.file import create_dir, write_file, read_file
 from buildtest.utils.timer import Timer
 from buildtest.utils.shell import Shell
@@ -33,7 +37,7 @@ class BuilderBase(ABC):
     any kind of builder.
     """
 
-    def __init__(self, name, recipe, buildspec, buildexecutor, testdir):
+    def __init__(self, name, recipe, buildspec, executor, buildexecutor, testdir):
         """The BuilderBase provides common functions for any builder. The builder
         is an instance of BuilderBase. The initializer method will setup the builder
         attributes based on input test by ``name`` parameter.
@@ -57,33 +61,32 @@ class BuilderBase(ABC):
 
         self.duration = 0
 
+        # The type must match the type of the builder
+        self.recipe = recipe
+
+        self.executor = executor
+
+        # For batch jobs this variable is an instance of Job class which would be one of the subclass
+        self.job = None
+
+        # Controls the state of the builder object, a complete job  will set
+        # this value to True. A job cancellation or job failure in submission will set this to False
+        self.state = None
+
         # keeps track of job state as job progress through queuing system. This is
         # applicable for builders using batch executor.
         self.job_state = None
 
-        # ensure buildspec ends with .yml extension
-        assert os.path.basename(buildspec).endswith(".yml")
-
         self.buildspec = buildspec
+        # strip .yml extension from file name
         file_name = re.sub("[.](yml)", "", os.path.basename(buildspec))
-        self.testdir = os.path.join(
-            testdir, recipe.get("executor"), file_name, self.name
-        )
+        self.testdir = os.path.join(testdir, self.executor, file_name, self.name)
 
         self.logger = logging.getLogger(__name__)
+
         self.logger.debug(f"Processing Buildspec: {self.buildspec}")
         self.logger.debug(f"Processing Buildspec section: {self.name}")
 
-        # A builder is required to define the type attribute
-        if not hasattr(self, "type"):
-            sys.exit(
-                "A builder base is required to define the 'type' as a class variable"
-            )
-
-        # The type must match the type of the builder
-        self.recipe = recipe
-
-        self.executor = self.recipe.get("executor")
         # get type attribute from Executor class (local, slurm, cobalt, lsf)
         self.executor_type = buildexecutor.executors[self.executor].type
         self.buildexecutor = buildexecutor
@@ -142,8 +145,8 @@ class BuilderBase(ABC):
         self.metadata["testroot"] = None
         # location of stage directory in test root
         self.metadata["stagedir"] = None
-        # location of run directory in test root
-        self.metadata["rundir"] = None
+
+        self.metadata["description"] = self.recipe.get("description")
 
         # location of test script
         self.metadata["testpath"] = None
@@ -179,8 +182,12 @@ class BuilderBase(ABC):
         :rtype: str
         """
 
-        self.logger.debug("Setting test extension to 'sh'")
-        return "sh"
+        # for python shell or bash shell type we return 'sh' extension
+        if self.shell_type == "python" or self.shell_type == "bash":
+            return "sh"
+
+        if self.shell_type == "csh":
+            return "csh"
 
     def start(self):
         """Keep internal time for start of test. We start timer by calling
@@ -203,7 +210,85 @@ class BuilderBase(ABC):
 
         self._build_setup()
         self._write_test()
-        self._create_symlinks()
+        self._write_build_script()
+
+    def run(self):
+        """Run the test and record the starttime and start timer. We also return the instance
+        object of type BuildTestCommand which is used by Executors for processing output and error
+        """
+
+        self.starttime()
+        self.start()
+        command = BuildTestCommand(self.runcmd)
+        command.execute()
+
+        self.logger.debug(f"Running Test via command: {self.runcmd}")
+        ret = command.returncode()
+
+        if ret != 0:
+            err = f"[{self.metadata['name']}] failed to submit job with returncode: {ret} \n"
+            raise ExecutorError(err)
+
+        return command
+
+    def starttime(self):
+        """This method will record the starttime when job starts execution by using ``datetime.datetime.now()``"""
+        self._starttime = datetime.datetime.now()
+
+        # this is recorded in the report file
+        self.metadata["result"]["starttime"] = self._starttime.strftime("%Y/%m/%d %X")
+
+    def endtime(self):
+        """This method is called upon termination of job, we get current time using ``datetime.datetime.now()`` and calculate runtime of job"""
+        self._endtime = datetime.datetime.now()
+
+        # this is recorded in the report file
+        self.metadata["result"]["endtime"] = self._endtime.strftime("%Y/%m/%d %X")
+
+        self.runtime()
+
+    def runtime(self):
+        # Calculate runtime of job by calculating delta between endtime and starttime.
+
+        runtime = self._endtime - self._starttime
+        self.metadata["result"]["runtime"] = runtime.total_seconds()
+
+    def complete(self):
+        """This method is invoked to indicate that builder job is complete after polling job."""
+        self.state = "COMPLETE"
+
+    def incomplete(self):
+        """This method indicates that builder job is not complete after polling job either job was
+        cancelled by scheduler or job failed to run.
+        """
+        self.state = "INCOMPLETE"
+
+    def run_command(self):
+        """Command used to run the build script. buildtest will change into the stage directory (self.stage_dir)
+        before running the test.
+        """
+
+        return f"sh {os.path.basename(self.build_script)}"
+
+    def copy_stage_files(self):
+        """Copy output and error file into test root directory since stage directory will be removed."""
+
+        shutil.copy2(
+            self.metadata["outfile"],
+            os.path.join(self.test_root, os.path.basename(self.metadata["outfile"])),
+        )
+        shutil.copy2(
+            self.metadata["errfile"],
+            os.path.join(self.test_root, os.path.basename(self.metadata["errfile"])),
+        )
+
+        # update outfile and errfile metadata records which show up in report file
+        self.metadata["outfile"] = os.path.join(
+            self.test_root, os.path.basename(self.metadata["outfile"])
+        )
+        self.metadata["errfile"] = os.path.join(
+            self.test_root, os.path.basename(self.metadata["errfile"])
+        )
 
     def _build_setup(self):
         """This method is the setup operation to get ready to build test which
@@ -218,28 +303,113 @@ class BuilderBase(ABC):
         # length of all files in testdir and creating a directory. Subsequent
         # runs will increment this counter
 
-        self.metadata["testroot"] = os.path.join(self.testdir, str(num_content))
-        create_dir(self.metadata["testroot"])
+        self.test_root = os.path.join(self.testdir, str(num_content))
 
-        self.stage_dir = os.path.join(self.metadata["testroot"], "stage")
-        self.run_dir = os.path.join(self.metadata["testroot"], "run")
+        create_dir(self.test_root)
+        self.metadata["testroot"] = self.test_root
+
+        self.stage_dir = os.path.join(self.test_root, "stage")
 
         # create stage and run directories
         create_dir(self.stage_dir)
         self.logger.debug("Creating the stage directory: %s ", self.stage_dir)
 
-        create_dir(self.run_dir)
-        self.logger.debug("Creating the run directory: %s", self.run_dir)
-
         self.metadata["stagedir"] = self.stage_dir
-        self.metadata["rundir"] = self.run_dir
 
         # Derive the path to the test script
-        self.metadata["testpath"] = "%s.%s" % (
-            os.path.join(self.stage_dir, "generate"),
+        self.testpath = "%s.%s" % (
+            os.path.join(self.stage_dir, self.name),
             self.get_test_extension(),
         )
-        self.metadata["testpath"] = os.path.expandvars(self.metadata["testpath"])
+        self.testpath = os.path.expandvars(self.testpath)
+
+        self.metadata["testpath"] = self.testpath
+
+        self.build_script = f"{os.path.join(self.stage_dir, self.name)}_build.sh"
+
+        # copy all files relative to buildspec file into stage directory
+        for fname in Path(os.path.dirname(self.buildspec)).glob("*"):
+            if fname.is_dir():
+                shutil.copytree(
+                    fname, os.path.join(self.stage_dir, os.path.basename(fname))
+                )
+            elif fname.is_file():
+                shutil.copy2(fname, self.stage_dir)
+
+    def _emit_command(self):
+        """This method will return a shell command used to invoke the script that is used for tests that
+        use local executors"""
+
+        if not self.recipe.get("shell") or self.recipe.get("shell") == "python":
+            return [self.metadata["testpath"]]
+
+        if not self.shell.opts:
+            return [self.shell.name, self.metadata["testpath"]]
+
+        return [self.shell.name, self.shell.opts, self.metadata["testpath"]]
+
+    def _write_build_script(self):
+        """This method will write the build script used for running the test"""
+
+        lines = ["#!/bin/bash"]
+        lines += [
+            f"source {os.path.join(BUILDTEST_EXECUTOR_DIR, self.executor, 'before_script.sh')}"
+        ]
+
+        # local executor
+        if self.buildexecutor.executors[self.executor].type == "local":
+            cmd = self._emit_command()
+
+            lines += [" ".join(cmd)]
+        # batch executor
+        else:
+            launcher = self.buildexecutor.executors[self.executor].launcher_command()
+            lines += [" ".join(launcher) + " " + f"{self.metadata['testpath']}"]
+
+        lines += ["returncode=$?"]
+        lines += ["exit $returncode"]
+
+        lines = "\n".join(lines)
+        write_file(self.build_script, lines)
+        self.logger.debug(f"Writing build script: {self.build_script}")
+        self._set_execute_perm(self.build_script)
+
+        # copying build script into test_root directory since stage directory will be removed
+        dest = os.path.join(self.test_root, os.path.basename(self.build_script))
+        shutil.copy2(self.build_script, dest)
+        self.logger.debug(f"Copying build script to: {dest}")
+
+        self.build_script = dest
+
+        self.runcmd = self.run_command()
+        self.metadata["command"] = self.runcmd
+
+    def _write_test(self):
+        """This method is responsible for invoking ``generate_script`` that
+        formulates content of testscript which is implemented in each subclass.
+        Next we write content to file and apply 755 permission on script so
+        it has executable permission.
+        """
+
+        # Implementation to write file generate.sh
+        lines = []
+
+        lines += self.generate_script()
+
+        lines = "\n".join(lines)
+
+        self.logger.info(f"Opening Test File for Writing: {self.metadata['testpath']}")
+
+        write_file(self.metadata["testpath"], lines)
+
+        self.metadata["test_content"] = lines
+
+        self._set_execute_perm(self.metadata["testpath"])
+        # copy testpath to run_dir
+        shutil.copy2(
+            self.metadata["testpath"],
+            os.path.join(self.test_root, os.path.basename(self.metadata["testpath"])),
+        )
 
     def _get_scheduler_directives(self, bsub, sbatch, cobalt, pbs, batch):
         """Get Scheduler Directives for LSF, Slurm or Cobalt if we are processing
@@ -322,63 +492,20 @@ class BuilderBase(ABC):
 
         return lines
 
-    def _set_execute_perm(self):
+    def _set_execute_perm(self, fname):
+        """Apply chmod 755 to input file name. The path must be an absolute path to script"""
         """Set permission to 755 on executable"""
 
         # Change permission of the file to executable
         os.chmod(
-            self.metadata["testpath"],
+            fname,
             stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH,
         )
         self.logger.debug(
-            f"Applying permission 755 to {self.metadata['testpath']} so that test can be executed"
+            f"Applying permission 755 to {fname} so that test can be executed"
         )
 
-    def _write_test(self):
-        """This method is responsible for invoking ``generate_script`` that
-        formulates content of testscript which is implemented in each subclass.
-        Next we write content to file and apply 755 permission on script so
-        it has executable permission.
-        """
-
-        # Implementation to write file generate.sh
-        lines = []
-
-        lines += self.generate_script()
-
-        lines = "\n".join(lines)
-
-        self.logger.info(f"Opening Test File for Writing: {self.metadata['testpath']}")
-
-        write_file(self.metadata["testpath"], lines)
-
-        self.metadata["test_content"] = lines
-
-        self._set_execute_perm()
-        # copy testpath to run_dir
-        shutil.copy2(
-            self.metadata["testpath"],
-            os.path.join(self.run_dir, os.path.basename(self.metadata["testpath"])),
-        )
-
-    def _create_symlinks(self):
-        """This method will retrieve all files relative to buildspec file and
-        create symlinks in destination directory
-        """
-        buildspec_directory = os.path.dirname(self.buildspec)
-        # list all files in current directory where buildspec file resides
-        files = [
-            os.path.join(buildspec_directory, file)
-            for file in os.listdir(buildspec_directory)
-        ]
-
-        # create symlink for all files directory where buildspec file exists
-        for file in files:
-            os.symlink(
-                file, os.path.join(self.metadata["stagedir"], os.path.basename(file))
-            )
-
-    def get_environment(self, env):
+    def _get_environment(self, env):
         """Retrieve a list of environment variables defined in buildspec and
         return them as list with the shell equivalent command
 
@@ -409,7 +536,7 @@ class BuilderBase(ABC):
 
         return lines
 
-    def get_variables(self, variables):
+    def _get_variables(self, variables):
         """Retrieve a list of  variables defined in buildspec and
         return them as list with the shell equivalent command.
 

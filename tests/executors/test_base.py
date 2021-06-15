@@ -8,8 +8,8 @@ from jsonschema.exceptions import ValidationError
 
 from buildtest.buildsystem.builders import Builder
 from buildtest.buildsystem.parser import BuildspecParser
-from buildtest.config import BuildtestConfiguration
-from buildtest.defaults import DEFAULT_SETTINGS_FILE
+from buildtest.config import SiteConfiguration
+from buildtest.exceptions import BuildTestError, BuildspecError
 from buildtest.executors.setup import BuildExecutor
 
 
@@ -18,7 +18,9 @@ pytest_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def test_build_executor(tmp_path):
 
-    bc = BuildtestConfiguration(DEFAULT_SETTINGS_FILE)
+    bc = SiteConfiguration()
+    bc.detect_system()
+    bc.validate()
 
     # Load BuildExecutor
     be = BuildExecutor(bc)
@@ -42,12 +44,16 @@ def test_build_executor(tmp_path):
         buildspec = os.path.join(examples_dir, buildspec)
         try:
             bp = BuildspecParser(buildspec, be)
-        except (SystemExit, ValidationError):
+        except (BuildTestError, BuildspecError, ValidationError):
             continue
 
         bp_filters = {"tags": None}
         builders = Builder(
-            bp=bp, buildexecutor=be, filters=bp_filters, testdir=tmp_path
+            bp=bp,
+            buildexecutor=be,
+            configuration=bc,
+            filters=bp_filters,
+            testdir=tmp_path,
         )
         valid_builders = builders.get_builders()
 

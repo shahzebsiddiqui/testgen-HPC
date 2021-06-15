@@ -8,16 +8,13 @@ include the following:
 5. Read and write a file via read_file(), write_file()
 """
 
+import json
 import os
-import logging
 from buildtest.exceptions import BuildTestError
-
-logger = logging.getLogger(__name__)
 
 
 def is_file(fname):
-    """This method will check if file exist, if so returns True otherwise returns
-    False
+    """This method will check if file exist, if so returns True otherwise returns False
 
     :param file: file path
     :type file: str, required
@@ -126,6 +123,15 @@ def resolve_path(path, exist=True):
     :rtype: str or None
     """
 
+    # if path not set return None
+    if not path:
+        return
+
+    if not isinstance(path, str):
+        raise BuildTestError(
+            f"Input must be a string type, {path} is of type {type(path)}"
+        )
+
     # apply shell expansion  when file includes something like $HOME/example
     path = os.path.expandvars(path)
     # apply user expansion when file includes something like  ~/example
@@ -147,13 +153,11 @@ def read_file(filepath):
     check if input is an invalid file. Finally we read the file and return
     the content of the file as a string.
 
-
-
     :param filepath: file name to read
     :type filepath: str, required
     :raises:
-      SystemError: If filepath is not a string
-      SystemError: If filepath is not valid file
+      BuildTestError: If filepath is not a string
+      BuildTestError: If filepath is not valid file
     :return: return content of file as a string
     :rtype: str
     """
@@ -197,8 +201,8 @@ def write_file(filepath, content):
     :param content: content to write to file
     :type content: str, required
     :raises:
-      SystemError: System error if filepath is not string
-      SystemError: System error if filepath is a directory
+      BuildTestError: System error if filepath is not string
+      BuildTestError: System error if filepath is a directory
     :return: Return nothing if write is successful. A system error if ``filepath`` is not str or directory. If
              argument ``content`` is not str we return ``None``
     """
@@ -226,3 +230,54 @@ def write_file(filepath, content):
             fd.write(content)
     except IOError as err:
         raise BuildTestError(f"Failed to write: {filepath}: {err}")
+
+
+def remove_file(fpath):
+    """This method is responsible for removing a file. The input path is an absolute path
+    to file. We check for exceptions first, and return immediately before removing file.
+
+    :param fpath: full path to file
+    :type fpath: str, required
+    """
+
+    if not fpath:
+        return
+
+    if not isinstance(fpath, str):
+        raise BuildTestError(
+            f"Unable to remove file: {fpath} because we have a type mismatch. It must be a string type"
+        )
+
+    # if its not a file return
+    if not is_file(fpath):
+        raise BuildTestError(
+            f"The filepath: {fpath} must be a file and must exist on file system"
+        )
+
+    try:
+        os.remove(fpath)
+    except OSError:
+        raise BuildTestError(f"Unable to delete file: {fpath}")
+
+
+def load_json(fname):
+    """Given a filename, resolves full path to file and loads json file. This method will
+    catch exception json.JSONDecodeError and raise an exception with useful message. If there is no
+    error we return content of json file
+    """
+    abspath_fname = resolve_path(fname)
+    # if filename doesn't exist we raise an exception
+    if not abspath_fname:
+        raise BuildTestError(f"Unable to resolve path: {fname}")
+
+    # attempt to open file for reading and use json.loads to read the content and check for exception
+    with open(abspath_fname) as fd:
+        try:
+            content = json.loads(fd.read())
+        except json.JSONDecodeError as err:
+            print(err)
+            raise BuildTestError(
+                f"Unable to read file: {fname}, please make sure its valid json file"
+            )
+
+        return content

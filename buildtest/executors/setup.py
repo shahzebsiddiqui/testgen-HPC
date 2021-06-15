@@ -7,74 +7,84 @@ on executor name.
 
 import logging
 import os
-import sys
 
-from buildtest.defaults import USER_SETTINGS_FILE, executor_root
+from buildtest.defaults import BUILDTEST_EXECUTOR_DIR
+from buildtest.executors.base import BaseExecutor
 from buildtest.executors.cobalt import CobaltExecutor
 from buildtest.executors.local import LocalExecutor
 from buildtest.executors.lsf import LSFExecutor
 from buildtest.executors.slurm import SlurmExecutor
 from buildtest.executors.pbs import PBSExecutor
+from buildtest.exceptions import ExecutorError
 from buildtest.utils.file import create_dir, write_file
+
+logger = logging.getLogger(__name__)
 
 
 class BuildExecutor:
-    """A BuildExecutor is a base class for an executor. The executors can be
-    different types such as local, slurm, lsf, cobalt which map to subclass
-    ``LocalExecutor``, ``SlurmExecutor``, ``LSFExecutor``, ``CobaltExecutor``
+    """A BuildExecutor is responsible for initialing executors from buildtest configuration
+    file which provides a list of executors. This class keeps track of all executors and provides
+    the following methods:
+
+    **setup**: This method will  write executor's ``before_script.sh``  that is sourced in each test upon calling executor.
+    **run**: Responsible for invoking executor's **run** method based on builder object which is of type BuilderBase.
+    **poll**: This is responsible for invoking ``poll`` method for corresponding executor from the builder object by checking job state
     """
 
-    def __init__(self, site_config):
+    def __init__(self, site_config, max_pend_time=None):
         """Initialize executors, meaning that we provide the buildtest
         configuration that are validated, and can instantiate
         each executor to be available.
 
         :param site_config: the site configuration for buildtest.
-        :type site_config: instance of BuildtestConfiguration class, required
+        :type site_config: SiteConfiguration class, required
         """
 
         self.executors = {}
-        self.logger = logging.getLogger(__name__)
-        self.logger.debug("Getting Executors from buildtest settings")
-
+        logger.debug("Getting Executors from buildtest settings")
+        active_system = site_config.name()
         if site_config.localexecutors:
             for name in site_config.localexecutors:
-                self.executors[f"{site_config.name}.local.{name}"] = LocalExecutor(
-                    f"{site_config.name}.local.{name}",
+                self.executors[f"{active_system}.local.{name}"] = LocalExecutor(
+                    f"{active_system}.local.{name}",
                     site_config.target_config["executors"]["local"][name],
                     site_config,
                 )
 
         if site_config.slurmexecutors:
             for name in site_config.slurmexecutors:
-                self.executors[f"{site_config.name}.slurm.{name}"] = SlurmExecutor(
-                    f"{site_config.name}.slurm.{name}",
+                self.executors[f"{active_system}.slurm.{name}"] = SlurmExecutor(
+                    f"{active_system}.slurm.{name}",
                     site_config.target_config["executors"]["slurm"][name],
                     site_config,
+                    max_pend_time,
                 )
 
         if site_config.lsfexecutors:
             for name in site_config.lsfexecutors:
-                self.executors[f"{site_config.name}.lsf.{name}"] = LSFExecutor(
-                    f"{site_config.name}.lsf.{name}",
+                self.executors[f"{active_system}.lsf.{name}"] = LSFExecutor(
+                    f"{active_system}.lsf.{name}",
                     site_config.target_config["executors"]["lsf"][name],
                     site_config,
+                    max_pend_time,
                 )
 
         if site_config.cobaltexecutors:
             for name in site_config.cobaltexecutors:
-                self.executors[f"{site_config.name}.cobalt.{name}"] = CobaltExecutor(
-                    f"{site_config.name}.cobalt.{name}",
+                self.executors[f"{active_system}.cobalt.{name}"] = CobaltExecutor(
+                    f"{active_system}.cobalt.{name}",
                     site_config.target_config["executors"]["cobalt"][name],
                     site_config,
+                    max_pend_time,
                 )
 
         if site_config.pbsexecutors:
             for name in site_config.pbsexecutors:
-                self.executors[f"{site_config.name}.pbs.{name}"] = PBSExecutor(
-                    f"{site_config.name}.pbs.{name}",
+                self.executors[f"{site_config.name()}.pbs.{name}"] = PBSExecutor(
+                    f"{active_system}.pbs.{name}",
                     site_config.target_config["executors"]["pbs"][name],
                     site_config,
+                    max_pend_time,
                 )
         self.setup()
 
@@ -87,92 +97,95 @@ class BuildExecutor:
     def list_executors(self):
         return list(self.executors.keys())
 
+    def is_local(self, executor_type):
+        return executor_type == "local"
+
+    def is_slurm(self, executor_type):
+        return executor_type == "slurm"
+
+    def is_lsf(self, executor_type):
+        return executor_type == "lsf"
+
+    def is_pbs(self, executor_type):
+        return executor_type == "pbs"
+
+    def is_cobalt(self, executor_type):
+        return executor_type == "cobalt"
+
     def get(self, name):
-        """Given the name of an executor return the executor for running
-        a buildtest build, or get the default.
-        """
+        """Given the name of an executor return the executor object which is of subclass of `BaseExecutor`"""
         return self.executors.get(name)
 
     def _choose_executor(self, builder):
-        """Choose executor is called at the onset of a run or poll stage. We
-        look at the builder metadata to determine if a default
-        is set for the executor, and fall back to the default.
+        """Choose executor is called at the onset of a run and poll stage. Given a builder
+        object we retrieve the executor property ``builder.executor`` of the builder and check if
+        there is an executor object and of type `BaseExecutor`.
 
         :param builder: the builder with the loaded Buildspec.
-        :type builder: buildtest.buildsystem.BuilderBase (or subclass).
+        :type builder: BuilderBase (subclass), required.
         """
 
-        # extract executor name from buildspec recipe
-        executor = builder.recipe.get("executor")
-
-        # if executor not defined in buildspec we raise an error
-        if not executor:
-            msg = "[%s]: 'executor' key not defined in buildspec: %s" % (
-                builder.metadata["name"],
-                builder.metadata["buildspec"],
-            )
-            builder.logger.error(msg)
-            builder.logger.debug("test: %s", builder.recipe)
-            sys.exit(msg)
-
-        # The executor is not valid we raise error
-        if executor not in self.executors:
-            msg = "[%s]: executor %s is not defined in %s" % (
-                builder.metadata["name"],
-                executor,
-                USER_SETTINGS_FILE,
-            )
-            builder.logger.error(msg)
-            sys.exit(msg)
-
         # Get the executor by name, and add the builder to it
-        executor = self.executors.get(executor)
-        executor.builder = builder
+        executor = self.executors.get(builder.executor)
+        if not isinstance(executor, BaseExecutor):
+            raise ExecutorError(
+                f"{executor} is not a valid executor because it is not of type BaseExecutor class."
+            )
+
         return executor
 
     def setup(self):
         """This method creates directory ``var/executors/<executor-name>``
         for every executor defined in buildtest configuration and write scripts
-        before_script.sh and after_script.sh if the fields ``before_script``
-        and ``after_script`` are specified in executor section. This method
+        before_script.sh if the field ``before_script``
+        is specified in executor section. This method
         is called after executors are initialized in the class **__init__**
         method.
         """
 
         for executor_name in self.executors.keys():
-            create_dir(os.path.join(executor_root, executor_name))
+            create_dir(os.path.join(BUILDTEST_EXECUTOR_DIR, executor_name))
             executor_settings = self.executors[executor_name]._settings
 
             # if before_script field defined in executor section write content to var/executors/<executor>/before_script.sh
-            file = os.path.join(executor_root, executor_name, "before_script.sh")
+            file = os.path.join(
+                BUILDTEST_EXECUTOR_DIR, executor_name, "before_script.sh"
+            )
             content = executor_settings.get("before_script") or ""
             write_file(file, content)
 
-            # after_script field defined in executor section write content to var/executors/<executor>/after_script.sh
-            file = os.path.join(executor_root, executor_name, "after_script.sh")
-            content = executor_settings.get("after_script") or ""
-            write_file(file, content)
-
     def run(self, builder):
-        """Given a BuilderBase (subclass) go through the
-        steps defined for the executor to run the build. This should
-        be instantiated by the subclass. For a simple script run, we expect a
-        setup, build, and finish.
+        """This method implements the executor run implementation. Given a builder object
+        we first detect the correct executor object to use and invoke its ``run`` method. The
+        executor object is a sub-class of BaseExecutor (i.e LocalExecutor, SlurmExecutor, LSFExecutor,...).
+
 
         :param builder: the builder with the loaded test configuration.
-        :type builder: buildtest.buildsystem.BuilderBase (or subclass).
+        :type builder: BuilderBase (subclass), required.
         """
         executor = self._choose_executor(builder)
-
         # The run stage for LocalExecutor is to invoke run method
         if executor.type == "local":
             executor.run(builder)
-        # The run stage for batch executor (Slurm, LSF, Cobalt) executor is to invoke dispatch method
+        # The run stage for batch executor (Slurm, LSF, Cobalt, PBS) executor is to invoke dispatch method
         elif executor.type in ["slurm", "lsf", "cobalt", "pbs"]:
             executor.dispatch(builder)
+        else:
+            raise ExecutorError(
+                f"Invalid executor type: {executor.type} for executor: {executor.name}. Please check your configuration file"
+            )
 
-    def poll(self, builder):
-        """Poll all jobs for batch executors (LSF, Slurm, Cobalt, PBS). For slurm we poll
+    def poll(self, builders):
+        """The poll stage is called after the `run` stage for builders that require job submission through
+        a batch executor. Given a set of builders object which are instance of BuilderBase, we select the executor
+        object and invoke the `poll` method for the executor.
+
+        1. If job is pending, running, suspended we poll job
+        2. If job is complete we gather job results and mark job complete
+        3. Otherwise we mark job incomplete and it will be ignored by buildtest in reporting
+
+
+        Poll all jobs for batch executors (LSF, Slurm, Cobalt, PBS). For slurm we poll
         until job is in ``PENDING`` or ``RUNNING`` state. If Slurm job is in
         ``FAILED`` or ``COMPLETED`` state we assume job is finished and we gather
         results. If its in any other state we ignore job and return out of method.
@@ -188,91 +201,83 @@ class BuildExecutor:
         which is ``done`` or ``exiting`` state, we mark job is complete.
 
         For PBS jobs we poll job if its in queued or running stage which corresponds
-        to "Q" and "R" in job stage. If job is finished ("F") we gather results. If job
-        is in "H" stage we automatically cancel job otherwise we ignore job and mark job complete.
+        to ``Q`` and ``R`` in job stage. If job is finished (``F``) we gather results. If job
+        is in ``H`` stage we automatically cancel job otherwise we ignore job and mark job complete.
 
-        :param builder: an instance of BuilderBase (subclass)
-        :type builder: BuilderBase (subclass), required
-        :return: Return a dictionary containing poll information
-        :rtype: dict
+        :param builder: a list of builder objects for polling. Each element is an instance of BuilderBase (subclass)
+        :type builder: list , required
+        :return: Return a list of builders
+        :rtype: list
         """
 
-        poll_info = {
-            "job_complete": False,  # indicate job is not complete and requires polling
-            "ignore_job": False,  # indicate job should be ignored
-        }
-        executor = self._choose_executor(builder)
-        # if builder is local executor we shouldn't be polling so we set job to
-        # complete and return
-        if executor.type == "local":
-            poll_info["job_complete"] = True
-            return poll_info
+        for builder in builders:
 
-        # poll Slurm job
-        if executor.type == "slurm":
-            # only poll job if its in PENDING or RUNNING state
-            if builder.job_state in ["PENDING", "RUNNING"] or not builder.job_state:
-                executor.poll(builder)
-            # conditions for gathering job results when job is in FAILED or COMPLETED state
-            elif builder.job_state in [
-                "FAILED",
-                "COMPLETED",
-                "TIMEOUT",
-                "OUT_OF_MEMORY",
-            ]:
-                executor.gather(builder)
-                poll_info["job_complete"] = True
+            executor = self._choose_executor(builder)
+            # if builder is local executor we shouldn't be polling so we set job to
+            # complete and return
+            if executor.type == "local":
+                builder.complete()
 
-            else:
-                poll_info["job_complete"] = True
-                poll_info["ignore_job"] = True
+            # if executor is a Slurm Executor poll Slurm Job
+            if self.is_slurm(executor.type):
+                if (
+                    builder.job.is_pending()
+                    or builder.job.is_suspended()
+                    or builder.job.is_running()
+                    or not builder.job.state()
+                ):
+                    executor.poll(builder)
+                elif builder.job.complete():
+                    executor.gather(builder)
+                    builder.complete()
 
-        # poll LSF job
-        elif executor.type == "lsf":
-            # only poll job if its in PENDING or RUNNING state
-            if builder.job_state in ["PEND", "RUN"] or not builder.job_state:
-                executor.poll(builder)
-            # only gather result when job state in DONE. This implies job is complete
-            elif builder.job_state == "DONE":
-                executor.gather(builder)
-                poll_info["job_complete"] = True
-            # any other job state (PSUSP, EXIT, USUSP, SSUSP) implies job failed
-            # abnormally so we consider job complete but set this to cancelled job so its ignored
-            else:
-                poll_info["job_complete"] = True
-                poll_info["ignore_job"] = True
+                else:
+                    builder.incomplete()
 
-        elif executor.type == "cobalt":
+            # poll LSF job
+            elif self.is_lsf(executor.type):
+                if (
+                    builder.job.is_pending()
+                    or builder.job.is_running()
+                    or builder.job.is_suspended()
+                    or not builder.job.state()
+                ):
+                    executor.poll(builder)
+                elif builder.job.is_complete():
+                    executor.gather(builder)
+                    builder.complete()
 
-            # only poll job if its in starting, queued, or running state
-            if (
-                builder.job_state in ["starting", "queued", "running"]
-                or not builder.job_state
-            ):
-                executor.poll(builder)
+                else:
+                    builder.incomplete()
 
-            # if job is done or exiting state we mark job_complete as True to indicate
-            # we dont want to poll anymore.
-            elif builder.job_state in ["done", "exiting"]:
-                poll_info["job_complete"] = True
-            elif builder.job_state in ["CANCELLED", "killing"]:
-                poll_info["job_complete"] = True
-                poll_info["ignore_job"] = True
+            # poll Cobalt Job
+            elif self.is_cobalt(executor.type):
+                if (
+                    builder.job.is_pending()
+                    or builder.job.is_running()
+                    or builder.job.is_suspended()
+                    or not builder.job.state()
+                ):
+                    executor.poll(builder)
+                elif builder.job.is_complete():
+                    builder.complete()
+                elif builder.job.is_cancelled():
+                    builder.incomplete()
 
-        elif executor.type == "pbs":
-            # pending or running job requires polling
-            if builder.job_state in ["Q", "R"] or not builder.job_state:
-                executor.poll(builder)
-            # if job is finished we gather results
-            elif builder.job_state in ["F"]:
-                executor.gather(builder)
-                poll_info["job_complete"] = True
-            # if job is on hold we cancel it asap
-            elif builder.job_state in ["H"]:
-                executor.cancel(builder)
-                poll_info["job_complete"] = True
-                poll_info["ignore_job"] = True
-            else:
-                poll_info["job_complete"] = True
-                poll_info["ignore_job"] = True
-        return poll_info
+            # poll PBS Job
+            elif self.is_pbs(executor.type):
+                if (
+                    builder.job.is_pending()
+                    or builder.job.is_running()
+                    or builder.job.is_suspended()
+                    or not builder.job.state()
+                ):
+                    executor.poll(builder)
+                elif builder.job.is_complete():
+                    executor.gather(builder)
+                    builder.complete()
+
+                else:
+                    builder.incomplete()
+
+        return builders

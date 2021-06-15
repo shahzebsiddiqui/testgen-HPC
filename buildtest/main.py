@@ -1,21 +1,20 @@
 """Entry point for buildtest"""
 
 import os
-import shutil
-import sys
-import tempfile
-from buildtest.config import (
-    check_settings,
-    resolve_settings_file,
-    buildtest_configuration,
+import webbrowser
+from buildtest.config import SiteConfiguration
+from buildtest.defaults import (
+    BUILDTEST_USER_HOME,
+    BUILDTEST_EXECUTOR_DIR,
+    BUILDTEST_BUILDSPEC_DIR,
+    BUILD_HISTORY_DIR,
 )
-from buildtest.defaults import var_root, BUILDTEST_USER_HOME
-from buildtest.menu.buildspec import buildspec_find
-from buildtest.menu import BuildTestParser
-from buildtest.menu.build import BuildTest
-from buildtest.system import system
-from buildtest.log import init_logfile, streamlog
-from buildtest.utils.file import create_dir, resolve_path
+from buildtest.cli import get_parser
+from buildtest.cli.build import BuildTest
+from buildtest.cli.history import build_history
+from buildtest.system import BuildTestSystem
+from buildtest.log import init_logfile
+from buildtest.utils.file import create_dir, is_file, resolve_path, remove_file
 
 # column width for linewrap for argparse library
 os.environ["COLUMNS"] = "120"
@@ -27,32 +26,39 @@ def main():
     if not os.getenv("BUILDTEST_COLOR"):
         os.environ["BUILDTEST_COLOR"] = "True"
 
-    # create a temporary file to store logfile and we don't delete file by setting 'delete=False'
-    # by default tempfile will delete file upon exit.
-    tf = tempfile.NamedTemporaryFile(prefix="buildtest_", delete=False, suffix=".log")
-    dest_logfile = tf.name
+    parser = get_parser()
+    args, extras = parser.parse_known_args()
 
-    logger = init_logfile(dest_logfile)
-    logger.info("Starting buildtest log")
+    # if no commands just print the help message and return.
+    if not args.subcommands:
+        print(parser.print_help())
+        return
+    buildtest_log = os.path.join(os.getenv("BUILDTEST_ROOT"), "buildtest.log")
+    if is_file(buildtest_log):
+        remove_file(buildtest_log)
+
+    logger = init_logfile()
 
     create_dir(BUILDTEST_USER_HOME)
-    create_dir(var_root)
+    create_dir(BUILDTEST_EXECUTOR_DIR)
+    create_dir(BUILDTEST_BUILDSPEC_DIR)
 
     # Create a build test system, and check requirements
-    # BuildTestSystem()
+    system = BuildTestSystem()
     system.check()
 
-    parser = BuildTestParser()
-    args = parser.parse_options()
+    config_file = resolve_path(args.config_file) or None
+    configuration = SiteConfiguration(config_file)
+    configuration.detect_system()
+    configuration.validate()
 
-    if args.debug:
-        streamlog(args.debug)
+    logger.info(f"Processing buildtest configuration file: {configuration.file}")
 
+    # buildtest build command
     if args.subcommands == "build":
-        # settings_file = resolve_settings_file(args.config)
-        # check_settings(args.config)
+
         cmd = BuildTest(
-            config_file=args.config,
+            configuration=configuration,
             buildspecs=args.buildspec,
             exclude_buildspecs=args.exclude,
             executors=args.executor,
@@ -61,45 +67,65 @@ def main():
             rebuild=args.rebuild,
             stage=args.stage,
             testdir=args.testdir,
+            buildtest_system=system,
+            report_file=args.report_file,
+            max_pend_time=args.max_pend_time,
+            poll_interval=args.poll_interval,
+            keep_stage_dir=args.keep_stage_dir,
         )
         cmd.build()
 
-        logdir = buildtest_configuration.target_config.get("logdir")
-
-        if not logdir:
-            print(f"Writing Logfile to: {dest_logfile}")
-            sys.exit(0)
-
-        logdir = resolve_path(logdir, exist=False)
-        if logdir:
-            create_dir(logdir)
-            fname = os.path.basename(dest_logfile)
-            logpath = os.path.join(logdir, fname)
-            shutil.copy2(dest_logfile, logpath)
-
-            print(f"Writing Logfile to: {logpath}")
-        else:
-            print(f"Writing Logfile to: {dest_logfile}")
-
-        # store copy of logfile at $BUILDTEST_ROOT/buildtest.log. A convenient location for user to
-        # find logfile for last build, this will be overwritten for every subsequent build.
-        shutil.copy2(
-            dest_logfile, os.path.join(os.getenv("BUILDTEST_ROOT"), "buildtest.log")
-        )
-        return
-
-    settings_file = resolve_settings_file()
-
-    logger.info(f"Processing buildtest configuration file: {settings_file}")
-    check_settings(settings_file)
+    # buildtest build history
+    elif args.subcommands == "history":
+        build_history(args)
 
     # implementation for 'buildtest buildspec find'
-    if args.subcommands == "buildspec":
-        buildspec_find(args=args, settings_file=settings_file)
-        return
+    elif args.subcommands == "buildspec":
+        from buildtest.cli.buildspec import buildspec_find
 
-    if args.subcommands and args.func:
-        args.func(args)
+        buildspec_find(args=args, configuration=configuration)
+
+    elif args.subcommands == "docs":
+        webbrowser.open("https://buildtest.readthedocs.io/")
+
+    elif args.subcommands == "schemadocs":
+        webbrowser.open("https://buildtesters.github.io/buildtest/")
+
+    # running buildtest inspect
+    elif args.subcommands == "inspect":
+        from buildtest.cli.inspect import inspect_cmd
+
+        inspect_cmd(args)
+
+    # running buildtest config compilers
+    elif args.subcommands == "config" and args.config == "compilers":
+        from buildtest.cli.compilers import compiler_cmd
+
+        compiler_cmd(args, configuration)
+
+    # running buildtest config
+    elif args.subcommands == "config":
+        from buildtest.cli.config import config_cmd
+
+        config_cmd(args, configuration)
+
+    # buildtest report
+    elif args.subcommands == "report":
+        from buildtest.cli.report import report_cmd
+
+        report_cmd(args)
+
+    # running bnuildtest schema
+    elif args.subcommands == "schema":
+        from buildtest.cli.schema import schema_cmd
+
+        schema_cmd(args)
+
+    # running buildtest cdash
+    elif args.subcommands == "cdash":
+        from buildtest.cli.cdash import cdash_cmd
+
+        cdash_cmd(args, default_configuration=configuration)
 
 
 if __name__ == "__main__":

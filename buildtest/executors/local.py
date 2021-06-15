@@ -61,42 +61,39 @@ class LocalExecutor(BaseExecutor):
         os.chdir(builder.stage_dir)
         self.logger.debug(f"Changing to directory {builder.stage_dir}")
 
-        cmd = [builder.metadata["testpath"]]
+        # ---------- Run Script ---------- #
 
-        builder.metadata["command"] = " ".join(cmd)
-        self.logger.debug(f"Running Test via command: {builder.metadata['command']}")
-
-        command = BuildTestCommand(builder.metadata["command"])
-
-        self.start_time(builder)
+        builder.starttime()
+        builder.start()
+        command = BuildTestCommand(builder.runcmd)
         out, err = command.execute()
-        self.end_time(builder)
+        builder.stop()
+        builder.endtime()
+
+        # ---------- Run Script ---------- #
+
+        self.logger.debug(f"Running Test via command: {builder.runcmd}")
 
         self.logger.debug(
             f"Return code: {command.returncode} for test: {builder.metadata['testpath']}"
         )
-        builder.metadata["result"]["returncode"] = command.returncode
+        builder.metadata["result"]["returncode"] = command.returncode()
 
         builder.metadata["output"] = "".join(out)
         builder.metadata["error"] = "".join(err)
+
         self.write_testresults(builder)
         self.check_test_state(builder)
 
     def write_testresults(self, builder):
-        """This method writes test results into output and error file.
+        """Upon execution of tests we write stdout and stderr to output and error file.
 
         :param builder: builder object
         :type builder: BuilderBase, required
         """
 
-        # Keep an output file
-        run_output_file = os.path.join(
-            builder.metadata.get("testroot"),
-            "run",
-            builder.metadata.get("name"),
-        )
-        outfile = run_output_file + ".out"
-        errfile = run_output_file + ".err"
+        outfile = os.path.join(builder.stage_dir, builder.name) + ".out"
+        errfile = os.path.join(builder.stage_dir, builder.name) + ".err"
 
         self.logger.debug(f"Writing test output to file: {outfile}")
         write_file(outfile, builder.metadata["output"])
@@ -107,3 +104,5 @@ class LocalExecutor(BaseExecutor):
 
         builder.metadata["outfile"] = outfile
         builder.metadata["errfile"] = errfile
+
+        builder.copy_stage_files()

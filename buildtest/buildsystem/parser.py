@@ -7,8 +7,9 @@ expose functions to run builds.
 
 import logging
 import os
+import re
 
-from buildtest.exceptions import BuildTestError
+from buildtest.exceptions import BuildTestError, BuildspecError
 from buildtest.executors.setup import BuildExecutor
 from buildtest.schemas.utils import load_recipe
 from buildtest.schemas.defaults import schema_table, custom_validator
@@ -47,7 +48,7 @@ class BuildspecParser:
                 "Invalid type argument for 'buildexecutor', must be of type BuildExecutor"
             )
 
-        self.buildexecutors = buildexecutor.list_executors()
+        self.buildexecutors = buildexecutor
 
         # if invalid input for buildspec
         if not buildspec:
@@ -89,15 +90,15 @@ class BuildspecParser:
         # if type not found in section, raise an error since every test
         # must be associated to a schema which is controlled by 'type' key
         if not self.schema_type:
-            raise BuildTestError(f"Did not find 'type' key in test section: {test}")
+            msg = f"Did not find 'type' key in test section: {test}"
+            raise BuildspecError(self.buildspec, msg)
 
         self.logger.info("Detected field 'type: %s'", self.schema_type)
 
         # Ensure we have a Buildspec recipe with a valid type
         if self.schema_type not in schema_table["types"]:
-            raise BuildTestError(
-                "type %s is not known to buildtest." % self.schema_type
-            )
+            msg = f"type {self.schema_type} is not known to buildtest."
+            raise BuildspecError(self.buildspec, msg)
 
         self.logger.info(
             "Checking '%s' in supported type schemas: %s",
@@ -107,14 +108,9 @@ class BuildspecParser:
 
         # And that there is a version file
         if self.schema_version not in schema_table["versions"][self.schema_type]:
-            raise BuildTestError(
-                "version %s is not known for schema type %s. Valid options are: %s"
-                % (
-                    self.schema_version,
-                    self.schema_type,
-                    schema_table["versions"][self.schema_type],
-                )
-            )
+            msg = f"version {self.schema_version} is not known for schema type: {self.schema_type}. Valid options for schema type are: {schema_table['versions'][self.schema_type]}"
+            raise BuildspecError(self.buildspec, msg)
+
         self.logger.info(
             "Checking version '%s' in version list: %s",
             self.schema_version,
@@ -129,15 +125,26 @@ class BuildspecParser:
         :type test: str, required
         """
 
-        # extract type field from test, if not found set to None
-        executor = self.recipe["buildspecs"][test].get("executor") or None
+        # extract type field from test, if not found
+        executor = self.recipe["buildspecs"][test].get("executor")
 
-        if executor not in self.buildexecutors:
-            raise BuildTestError(
-                f"executor: {executor} not found in executor list: {self.buildexecutors}"
+        if not executor:
+            raise BuildspecError(self.buildspec, "No 'executor' key found in buildspec")
+
+        match = False
+        for name in self.buildexecutors.list_executors():
+            if re.match(executor, name):
+                match = True
+                break
+
+        if not match:
+            raise BuildspecError(
+                self.buildspec,
+                f"Unable to find executor: {executor} in {self.buildexecutors.list_executors()}",
             )
+
         self.logger.debug(
-            f"Executor: {executor} found in executor list: {self.buildexecutors}"
+            f"Executor: {executor} found in executor list: {self.buildexecutors.list_executors()}"
         )
 
     def _validate(self):

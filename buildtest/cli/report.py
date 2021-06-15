@@ -1,11 +1,10 @@
-import json
 import os
 import sys
 from termcolor import colored
 from tabulate import tabulate
 from buildtest.defaults import BUILD_REPORT
 from buildtest.exceptions import BuildTestError
-from buildtest.utils.file import is_file, create_dir, resolve_path
+from buildtest.utils.file import is_file, load_json, resolve_path
 
 
 def is_int(val):
@@ -56,11 +55,14 @@ class Report:
         "buildspec": [],
     }
 
-    def __init__(self, filter_args, format_args, latest, oldest):
+    def __init__(
+        self, filter_args, format_args, latest, oldest, report_file=BUILD_REPORT
+    ):
         self.latest = latest
         self.oldest = oldest
         self.filter = filter_args
         self.format = format_args
+        self.reportfile = resolve_path(report_file)
         self.report = self.load()
         self._check_filter_fields()
         self._check_format_fields()
@@ -68,25 +70,25 @@ class Report:
 
         self.process_report()
 
+    def get_report_file(self):
+        return self.reportfile
+
     def _check_filter_fields(self):
         # check if filter arguments (--filter) are valid fields
         if self.filter:
 
-            raiseError = False
             # check if filter keys are accepted filter fields, if not we raise error
             for key in self.filter.keys():
                 if key not in self.filter_fields:
-                    print(f"Invalid filter key: {key}")
-                    raiseError = True
+                    self.print_filter_fields()
+                    raise BuildTestError(
+                        f"Invalid filter key: {key}, please run 'buildtest report --helpfilter' for list of available filter fields"
+                    )
 
                 if key == "returncode" and not is_int(self.filter[key]):
                     raise BuildTestError(
                         f"Invalid returncode:{self.filter[key]} must be an integer"
                     )
-
-            # raise error if any filter field is invalid
-            if raiseError:
-                sys.exit(1)
 
     def _check_format_fields(self):
         """Check all format arguments (--format) are valid, the arguments are specified
@@ -103,7 +105,8 @@ class Report:
             # check all input format fields are valid fields
             for field in self.display_format_fields:
                 if field not in self.format_fields:
-                    sys.exit(f"Invalid format field: {field}")
+                    self.print_format_fields()
+                    raise BuildTestError(f"Invalid format field: {field}")
 
             # reassign display_table to format fields
             self.display_table = {}
@@ -118,19 +121,16 @@ class Report:
         entire report of all tests.
         """
 
-        # raise error if BUILD_REPORT not found
-        if not is_file(BUILD_REPORT):
-            sys.exit(f"Unable to fetch report no such file found: {BUILD_REPORT}")
+        if not is_file(self.reportfile):
+            sys.exit(f"Unable to fetch report no such file found: {self.reportfile}")
 
-        report = None
-        with open(BUILD_REPORT, "r") as fd:
-            report = json.loads(fd.read())
+        report = load_json(self.reportfile)
 
         # if report is None or issue with how json.load returns content of file we
         # raise error
         if not report:
             sys.exit(
-                f"Fail to process {BUILD_REPORT} please check if file is valid json"
+                f"Fail to process {self.reportfile} please check if file is valid json"
                 f"or remove file"
             )
         return report
@@ -385,9 +385,18 @@ class Report:
         )
 
 
-def func_report(args=None):
+def report_cmd(args):
 
-    results = Report(args.filter, args.format, args.latest, args.oldest)
+    if args.report == "clear":
+        if not is_file(args.report_file):
+            sys.exit(f"There is no report file: {args.report_file} to delete")
+        print(f"Removing report file: {args.report_file}")
+        os.remove(BUILD_REPORT)
+        return
+
+    results = Report(
+        args.filter, args.format, args.latest, args.oldest, args.report_file
+    )
     if args.helpfilter:
         results.print_filter_fields()
         return
@@ -396,75 +405,5 @@ def func_report(args=None):
         results.print_format_fields()
         return
 
+    print(f"Reading report file: {results.get_report_file()} \n")
     results.print_display_table()
-
-
-def update_report(valid_builders):
-    """This method will update BUILD_REPORT after every test run performed
-    by ``buildtest build``. If BUILD_REPORT is not created, we will create
-    file and update json file by extracting contents from builder.metadata
-
-    :param valid_builders: builder object that were successful during build and able to execute test
-    :type valid_builders: instance of BuilderBase (subclass)
-    """
-
-    if not is_file(os.path.dirname(BUILD_REPORT)):
-        create_dir(os.path.dirname(BUILD_REPORT))
-
-    # if file exists, read json file otherwise set report to empty dict
-    try:
-        with open(BUILD_REPORT, "r") as fd:
-            report = json.loads(fd.read())
-    except OSError:
-        report = {}
-
-    for builder in valid_builders:
-        buildspec = builder.metadata["buildspec"]
-        name = builder.metadata["name"]
-        entry = {}
-
-        report[buildspec] = report.get(buildspec) or {}
-        report[buildspec][name] = report.get(buildspec, {}).get(name) or []
-
-        # query over attributes found in builder.metadata, we only assign
-        # keys that we care about for reporting
-        for item in [
-            "id",
-            "full_id",
-            "schemafile",
-            "executor",
-            "compiler",
-            "hostname",
-            "user",
-            "testroot",
-            "testpath",
-            "stagedir",
-            "rundir",
-            "command",
-            "outfile",
-            "errfile",
-            "buildspec_content",
-            "test_content",
-        ]:
-            entry[item] = builder.metadata[item]
-
-        entry["tags"] = ""
-        # convert tags to string if defined in buildspec
-        if builder.metadata["tags"]:
-            if isinstance(builder.metadata["tags"], list):
-                entry["tags"] = " ".join(builder.metadata["tags"])
-            else:
-                entry["tags"] = builder.metadata["tags"]
-
-        # query over result attributes, we only assign some keys of interest
-        for item in ["starttime", "endtime", "runtime", "state", "returncode"]:
-            entry[item] = builder.metadata["result"][item]
-
-        entry["output"] = builder.metadata["output"]
-        entry["error"] = builder.metadata["error"]
-
-        entry["job"] = builder.metadata["job"]
-        report[buildspec][name].append(entry)
-
-    with open(BUILD_REPORT, "w") as fd:
-        json.dump(report, fd, indent=2)

@@ -2,7 +2,6 @@
 BuildExecutor: manager for test executors
 """
 
-import datetime
 import logging
 import os
 import re
@@ -24,7 +23,7 @@ class BaseExecutor:
         :param settings: executor settings from configuration file for a particular executor instance (``local.bash``)
         :type settings: dict, required
         :param site_configs: loaded buildtest configuration
-        :type site_configs: instance of BuildtestConfiguration, required
+        :type site_configs: instance of SiteConfiguration, required
         """
 
         self.logger = logging.getLogger(__name__)
@@ -46,27 +45,6 @@ class BaseExecutor:
         we set the result to return.
         """
 
-    def start_time(self, builder):
-        """Record start time in builder metadata object. This method is called right after job submission"""
-        builder.metadata["result"]["starttime"] = datetime.datetime.now()
-
-    def end_time(self, builder):
-        """Record end time in builder metadata object. This method is after job completion."""
-        builder.metadata["result"]["endtime"] = datetime.datetime.now()
-
-        # Calculate runtime of job by calculating delta between start and endtime.
-        runtime = (
-            builder.metadata["result"]["endtime"]
-            - builder.metadata["result"]["starttime"]
-        )
-        builder.metadata["result"]["runtime"] = runtime.total_seconds()
-        builder.metadata["result"]["starttime"] = builder.metadata["result"][
-            "starttime"
-        ].strftime("%Y/%m/%d %X")
-        builder.metadata["result"]["endtime"] = builder.metadata["result"][
-            "endtime"
-        ].strftime("%Y/%m/%d %X")
-
     def __str__(self):
         return "%s.%s" % (self.type, self.name)
 
@@ -82,8 +60,9 @@ class BaseExecutor:
         will return a boolean True indicates there is a match otherwise False
         if ``regex`` object not defined or ``re.search`` doesn't find a match.
 
-        :param status: status property defined in Buildspec file
-        :type status: dict, required
+        :param builder: instance of BuilderBase class
+        :type builder: BuilderBase (subclass)
+
         :return: A boolean return True/False based on if re.search is successful or not
         :rtype: bool
         """
@@ -115,6 +94,9 @@ class BaseExecutor:
     def _returncode_check(self, builder):
         """Check status check of ``returncode`` field if specified in status
         property.
+
+        :param builder: instance of BuilderBase class
+        :type builder: BuilderBase (subclass)
         """
 
         returncode_match = False
@@ -143,18 +125,54 @@ class BaseExecutor:
 
         return returncode_match
 
+    def _check_runtime(self, builder):
+        """This method will return a boolean (True/False) based on runtime specified in buildspec and check with test runtime.
+        User can specify both `min` and `max`, or just specify `min` or `max`.
+
+        """
+
+        if not builder.status.get("runtime"):
+            return False
+
+        min_time = builder.status["runtime"].get("min") or 0
+        max_time = builder.status["runtime"].get("max")
+
+        # if both min and max are specified
+        if min_time and max_time:
+            self.logger.debug(
+                f"Checking test: {builder.name} runtime: {builder.metadata['result']['runtime']} is greater than min: {float(min_time)} and less than max: {float(max_time)}"
+            )
+            return (
+                float(min_time)
+                < builder.metadata["result"]["runtime"]
+                < float(max_time)
+            )
+
+        # if min specified
+        if min_time and not max_time:
+            self.logger.debug(
+                f"Checking test: {builder.name} runtime: {builder.metadata['result']['runtime']} is greater than min: {float(min_time)}"
+            )
+            return float(min_time) < builder.metadata["result"]["runtime"]
+
+        # if max specified
+        if not min_time and max_time:
+            self.logger.debug(
+                f"Checking test: {builder.name} runtime: {builder.metadata['result']['runtime']} is less than max: {float(max_time)}"
+            )
+            return builder.metadata["result"]["runtime"] < float(max_time)
+
     def check_test_state(self, builder):
         """This method is responsible for detecting state of test (PASS/FAIL)
         based on returncode or regular expression.
+
+        :param builder: instance of BuilderBase class
+        :type builder: BuilderBase (subclass)
         """
 
         builder.metadata["result"]["state"] = "FAIL"
         # if status is defined in Buildspec, then check for returncode and regex
         if builder.status:
-
-            # regex_match is boolean to check if output/error stream matches regex defined in Buildspec,
-            # if no regex is defined we set this to True since we do a logical AND
-            regex_match = False
 
             slurm_job_state_match = False
 
@@ -164,6 +182,8 @@ class BaseExecutor:
             # check regex against output or error stream based on regular expression
             # defined in status property. Return value is a boolean
             regex_match = self._check_regex(builder)
+
+            runtime_match = self._check_runtime(builder)
 
             # if slurm_job_state_codes defined in buildspec.
             # self.builder.metadata["job"] only defined when job run through SlurmExecutor
@@ -178,7 +198,12 @@ class BaseExecutor:
                 % (returncode_match, regex_match, slurm_job_state_match)
             )
 
-            if returncode_match or regex_match or slurm_job_state_match:
+            if (
+                returncode_match
+                or regex_match
+                or slurm_job_state_match
+                or runtime_match
+            ):
                 builder.metadata["result"]["state"] = "PASS"
 
         # if status is not defined we check test returncode, by default 0 is PASS and any other return code is a FAIL
@@ -187,4 +212,4 @@ class BaseExecutor:
                 builder.metadata["result"]["state"] = "PASS"
 
         # Return to starting directory for next test
-        os.chdir(self.builder.pwd)
+        os.chdir(builder.pwd)

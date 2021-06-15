@@ -3,10 +3,8 @@ import os
 import shutil
 
 from buildtest.buildsystem.base import BuilderBase
-from buildtest.config import buildtest_configuration
-from buildtest.defaults import executor_root
 from buildtest.exceptions import BuildTestError
-from buildtest.menu.compilers import BuildtestCompilers
+from buildtest.cli.compilers import BuildtestCompilers
 from buildtest.utils.file import resolve_path
 from buildtest.utils.tools import deep_get
 
@@ -45,17 +43,26 @@ class CompilerBuilder(BuilderBase):
     cppflags = None
 
     def __init__(
-        self, name, recipe, buildspec, buildexecutor, compiler=None, testdir=None
+        self,
+        name,
+        recipe,
+        buildspec,
+        buildexecutor,
+        executor,
+        configuration,
+        compiler=None,
+        testdir=None,
     ):
         super().__init__(
             name=name,
             recipe=recipe,
             buildspec=buildspec,
+            executor=executor,
             buildexecutor=buildexecutor,
             testdir=testdir,
         )
         self.compiler = compiler
-
+        self.configuration = configuration
         self.metadata["compiler"] = compiler
 
         self.compiler_section = self.recipe["compilers"]
@@ -199,15 +206,11 @@ class CompilerBuilder(BuilderBase):
         if data_warp_lines:
             lines += data_warp_lines
 
-        lines += [
-            f"source {os.path.join(executor_root, self.executor, 'before_script.sh')}"
-        ]
-
         lines += [self.exec_variable]
 
-        lines += self.get_environment(self.envvars)
+        lines += self._get_environment(self.envvars)
         # get variables
-        lines += self.get_variables(self.vars)
+        lines += self._get_variables(self.vars)
 
         # if 'module' defined in Buildspec add modules to test
         if self.modules:
@@ -230,9 +233,6 @@ class CompilerBuilder(BuilderBase):
         if self.post_run:
             lines.append(self.post_run)
 
-        lines += [
-            f"source {os.path.join(executor_root, self.executor, 'after_script.sh')}"
-        ]
         return lines
 
     def _resolve_source(self):
@@ -241,13 +241,13 @@ class CompilerBuilder(BuilderBase):
         Buildspec recipe.
         """
 
-        # attempt to resolve path based on 'source' field. One can specify an absolute path if specified we honor it
-        self.abspath_sourcefile = resolve_path(self.sourcefile)
-        # One can specify a relative path to where buildspec is located when using 'source' field so we try again
-        if not self.abspath_sourcefile:
-            self.abspath_sourcefile = resolve_path(
-                os.path.join(os.path.dirname(self.buildspec), self.sourcefile)
-            )
+        # attempt to resolve path based on 'source' field.
+        # 1. The source file can be absolute path and if exists we use this
+        # 2. The source file can be relative path to where buildspec is located
+
+        self.abspath_sourcefile = resolve_path(self.sourcefile) or resolve_path(
+            os.path.join(os.path.dirname(self.buildspec), self.sourcefile)
+        )
 
         # raise error if we can't find source file to compile
         if not self.abspath_sourcefile:
@@ -385,7 +385,7 @@ class CompilerBuilder(BuilderBase):
         configuration in buildtest setting if none defined. This method is responsible
         for setting cc, fc, cxx, cflags, cxxflags, fflags, ldflags, and cppflags.
         """
-        bc = BuildtestCompilers()
+        bc = BuildtestCompilers(configuration=self.configuration)
 
         self.compiler_group = bc.compiler_name_to_group[self.compiler]
         self.logger.debug(
@@ -393,9 +393,9 @@ class CompilerBuilder(BuilderBase):
         )
 
         # compiler from buildtest settings
-        self.bc_compiler = buildtest_configuration.target_config["compilers"][
-            "compiler"
-        ][self.compiler_group][self.compiler]
+        self.bc_compiler = self.configuration.target_config["compilers"]["compiler"][
+            self.compiler_group
+        ][self.compiler]
 
         self.logger.debug(self.bc_compiler)
         # set compiler values based on 'default' property in buildspec. This can override
@@ -541,7 +541,7 @@ class CompilerBuilder(BuilderBase):
         return self.ldflags
 
     def get_path(self):
-        """ This method returns the full path for C, C++, Fortran compilers"""
+        """This method returns the full path for C, C++, Fortran compilers"""
 
         path = {
             self.cc: shutil.which(self.cc),

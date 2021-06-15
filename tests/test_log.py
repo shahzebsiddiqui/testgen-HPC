@@ -1,19 +1,18 @@
-import os
+import tempfile
 from buildtest.log import init_logfile
 from buildtest.utils.file import read_file
 
 
-def test_init_logfile(tmp_path):
-    logfile = os.path.join(tmp_path, "buildtest.log")
-    print(f"Logfile: {logfile}")
+def test_BuildTestLogger():
 
-    logger = init_logfile(logfile)
-    assert logger
+    logger = init_logfile()
 
-    # check if handler is defined
-    assert logger.hasHandlers()
-    # check if Log Level is set to DEBUG (10)
+    # ensure we have effective level of 10 (DEBUG)
     assert logger.getEffectiveLevel() == 10
+
+    tf = tempfile.NamedTemporaryFile()
+
+    assert logger.name == "buildtest"
 
     # writing message at each log level
     logger.debug("DEBUG MESSAGE")
@@ -21,5 +20,5 @@ def test_init_logfile(tmp_path):
     logger.warning("WARNING MESSAGE!")
     logger.error("ERROR MESSAGE!!")
     logger.critical("CRITICAL MESSAGE!!!")
-    content = read_file(logfile)
+    content = read_file(tf.name)
     print(content)

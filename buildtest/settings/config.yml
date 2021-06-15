@@ -48,9 +48,9 @@ system:
       compiler:
         gcc:
           builtin_gcc:
-            cc: /usr/bin/gcc
-            fc: /usr/bin/gfortran
-            cxx: /usr/bin/g++
+            cc: gcc
+            fc: gfortran
+            cxx: g++
 
     # location of log directory
     # logdir: /tmp/
@@ -60,3 +60,9 @@ system:
 
     # specify one or more directory where buildtest should load buildspecs
     # buildspec_roots: []
+
+    cdash:
+      url: https://my.cdash.org/
+      project: buildtest
+      site: generic
+      buildname: tutorials

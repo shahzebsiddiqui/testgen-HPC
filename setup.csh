@@ -58,7 +58,7 @@ endif
 
 
 # error printing tables from tabulate when utf8 encoding not set. See https://github.com/buildtesters/buildtest/issues/665
-setenv LANG en_US.utf8
+# setenv LANG en_US.utf8
 
 set pip=pip
 
@@ -68,15 +68,15 @@ if ( ! -x `command -v $pip` ) then
 endif
 
 echo "Installing buildtest dependencies"
-pip install -r ${BUILDTEST_ROOT}/requirements.txt > /dev/null
+pip install --target $BUILDTEST_ROOT/.packages -r ${BUILDTEST_ROOT}/requirements.txt > /dev/null
 set bin=${BUILDTEST_ROOT}/bin
 set path=($path $bin)
 
 # add PYTHONPATH for buildtest to persist in shell environment
 if (! $?PYTHONPATH ) then
-	setenv PYTHONPATH $BUILDTEST_ROOT
+	setenv PYTHONPATH $BUILDTEST_ROOT:$BUILDTEST_ROOT/.packages
 else
-        setenv PYTHONPATH ${PYTHONPATH}:$BUILDTEST_ROOT
+        setenv PYTHONPATH ${PYTHONPATH}:$BUILDTEST_ROOT:$BUILDTEST_ROOT/.packages
 endif
 
 echo "BUILDTEST_ROOT: $BUILDTEST_ROOT"

@@ -1,31 +1,36 @@
 """This method implements CobaltExecutor class which is defines how cobalt executor
 submit job to Cobalt scheduler."""
-
+import logging
 import json
 import os
 import re
+import time
 import shutil
-import sys
-
 from buildtest.executors.base import BaseExecutor
+from buildtest.executors.job import Job
 from buildtest.utils.command import BuildTestCommand
-from buildtest.utils.file import read_file
+from buildtest.utils.file import read_file, is_file
 from buildtest.utils.tools import deep_get
+
+logger = logging.getLogger(__name__)
 
 
 class CobaltExecutor(BaseExecutor):
     """The CobaltExecutor class is responsible for submitting jobs to Cobalt Scheduler.
     The class implements the following methods:
 
-    load: load Cobalt executors from configuration file
-    dispatch: submit Cobalt job to scheduler
-    poll: poll Cobalt job via qstat and retrieve job state
-    gather: gather job result
-    cancel: cancel job if it exceeds max pending time
+    - **load**: load Cobalt executors from configuration file
+    - **dispatch**: submit Cobalt job to scheduler
+    - **poll**: poll Cobalt job via qstat and retrieve job state
+    - **gather**: gather job record including output, error, exit code
     """
 
     type = "cobalt"
-    poll_cmd = "qstat"
+
+    def __init__(self, name, settings, site_configs, max_pend_time=None):
+
+        self.maxpendtime = max_pend_time
+        super().__init__(name, settings, site_configs)
 
     def load(self):
         """Load the a Cobalt executor configuration from buildtest settings."""
@@ -39,22 +44,18 @@ class CobaltExecutor(BaseExecutor):
         self.account = self._settings.get("account") or deep_get(
             self._buildtestsettings.target_config, "executors", "defaults", "account"
         )
-        self.max_pend_time = self._settings.get("max_pend_time") or deep_get(
-            self._buildtestsettings, "executors", "defaults", "max_pend_time"
+        self.max_pend_time = (
+            self.maxpendtime
+            or self._settings.get("max_pend_time")
+            or deep_get(
+                self._buildtestsettings.target_config,
+                "executors",
+                "defaults",
+                "max_pend_time",
+            )
         )
 
-    def dispatch(self, builder):
-        """This method is responsible for dispatching Cobalt job, get JobID
-        and start record metadata in builder object. If job failed to submit
-        we check returncode and exit with failure. After we submit job, we
-        start timer and record when job was submitted and poll job once to get
-        job details and store them in builder object.
-
-        :param builder: builder object
-        :type builder: BuilderBase, required
-        """
-
-        os.chdir(builder.stage_dir)
+    def launcher_command(self):
 
         batch_cmd = [self.launcher]
 
@@ -67,53 +68,251 @@ class CobaltExecutor(BaseExecutor):
         if self.launcher_opts:
             batch_cmd += [" ".join(self.launcher_opts)]
 
-        batch_cmd += [builder.metadata["testpath"]]
-        builder.metadata["command"] = " ".join(batch_cmd)
-        self.logger.debug(f"Running Test via command: {builder.metadata['command']}")
+        return batch_cmd
 
-        command = BuildTestCommand(builder.metadata["command"])
-        command.execute()
-        self.start_time(builder)
-        builder.start()
+    def dispatch(self, builder):
+        """This method is responsible for dispatching job to Cobalt Scheduler by invoking ``builder.run()``
+        which runs the build script. If job is submitted to scheduler, we get the JobID and pass this to
+        ``CobaltJob`` class. At job submission, cobalt will report the output and error file which can be retrieved
+        using **qstat**. We retrieve the cobalt job record using ``builder.job.gather()``.
 
-        # if qsub job submission returns non-zero exit that means we have failure, exit immediately
-        if command.returncode != 0:
-            err = f"[{builder.metadata['name']}] failed to submit job with returncode: {command.returncode} \n"
-            err += (
-                f"[{builder.metadata['name']}] running command: {' '.join(batch_cmd)}"
-            )
-            sys.exit(err)
+        :param builder: builder object
+        :type builder: BuilderBase, required
+        """
 
-        parse_jobid = command.get_output()
-        parse_jobid = " ".join(parse_jobid)
+        os.chdir(builder.stage_dir)
+
+        command = builder.run()
+
+        out = command.get_output()
+        out = " ".join(out)
 
         # convert JobID into integer
-        self.job_id = int(parse_jobid)
+        job_id = int(out)
+        builder.metadata["jobid"] = job_id
 
-        builder.metadata["jobid"] = self.job_id
+        builder.job = CobaltJob(job_id)
 
         msg = f"[{builder.metadata['name']}] JobID: {builder.metadata['jobid']} dispatched to scheduler"
         print(msg)
-        self.logger.debug(msg)
+        logger.debug(msg)
 
         # output and error file in format <JOBID>.output and <JOBID>.error we set full path to file. By
         # default Cobalt will write file into current directory where job is submitted. We assume output and error
         # file names are not set in job script
-        outfile = str(builder.metadata["jobid"]) + ".output"
-        errfile = str(builder.metadata["jobid"]) + ".error"
-        builder.metadata["outfile"] = os.path.join(builder.stage_dir, outfile)
-        builder.metadata["errfile"] = os.path.join(builder.stage_dir, errfile)
 
-        self.logger.debug(
-            f"Output file will be written to: {builder.metadata['outfile']}"
+        builder.metadata["outfile"] = os.path.join(
+            builder.stage_dir, builder.job.output_file()
         )
-        self.logger.debug(
-            f"Error file will be written to: {builder.metadata['errfile']}"
+        builder.metadata["errfile"] = os.path.join(
+            builder.stage_dir, builder.job.error_file()
         )
+
+        logger.debug(f"Output file will be written to: {builder.metadata['outfile']}")
+        logger.debug(f"Error file will be written to: {builder.metadata['errfile']}")
+
+        builder.metadata["job"] = builder.job.gather()
+        logger.debug(json.dumps(builder.metadata["job"], indent=2))
+
+    def poll(self, builder):
+        """This method is responsible for polling Cobalt job by invoking the builder method
+        ``builder.job.poll()``.  We check the job state and existence of output file. If file
+        exists or job is complete, we gather the results and return from function. If job
+        is pending we check if job time exceeds ``max_pend_time`` time limit and cancel job.
+
+        :param builder: builder object
+        :type builder: BuilderBase, required
+        """
+
+        builder.job.poll()
+        # Cobalt job can disappear if job is complete so we check when outputfile exists as an indicator when job is finished
+        if is_file(builder.metadata["outfile"]) or builder.job.is_complete():
+            builder.job_state = "exiting"
+            self.gather(builder)
+            return
+
+        # if job is pending or suspended check if builder timer duration exceeds max_pend_time if so cancel job
+        if builder.job.is_pending() or builder.job.is_suspended():
+            builder.stop()
+            logger.debug(f"Time Duration: {builder.duration}")
+            logger.debug(f"Max Pend Time: {self.max_pend_time}")
+
+            # if timer time is more than requested pend time then cancel job
+            if int(builder.duration) > self.max_pend_time:
+                builder.job.cancel()
+                builder.job_state = builder.job.state()
+                print(
+                    "Cancelling Job because duration time: {:f} sec exceeds max pend time: {} sec".format(
+                        builder.duration, self.max_pend_time
+                    )
+                )
+
+            builder.start()
+
+    def gather(self, builder):
+        """This method is responsible for moving output and error file in the run
+        directory. We need to read ``<JOBID>.cobaltlog`` file which contains
+        output of exit code by performing a regular expression ``(exit code of.)(\d+)(\;)``.
+        The cobalt log file will contain a line: **task completed normally with an exit code of 0; initiating job cleanup and removal**
+
+        :param builder: builder object
+        :type builder: BuilderBase, required
+        """
+
+        builder.endtime()
+        # The cobalt job will write output and error file after job completes, there is a few second delay before file comes. Hence
+        # stay in while loop and sleep for every 5 second until we find both files in filesystem
+        while True:
+            interval = 5
+            if is_file(builder.metadata["outfile"]) and is_file(
+                builder.metadata["errfile"]
+            ):
+                break
+            logger.debug(
+                f"Sleeping {interval} seconds and waiting for Cobalt Scheduler to write output and error file"
+            )
+            time.sleep(interval)
+
+        builder.metadata["output"] = read_file(builder.metadata["outfile"])
+        builder.metadata["error"] = read_file(builder.metadata["errfile"])
+
+        cobaltlog = os.path.join(builder.stage_dir, builder.job.cobalt_log())
+
+        logger.debug(f"Cobalt Log File written to {cobaltlog}")
+
+        # if os.path.exists(cobaltlog):
+        content = read_file(cobaltlog)
+        pattern = r"(exit code of.)(\d+)(\;)"
+        # pattern to check in cobalt log file is 'exit code of <CODE>;'
+        m = re.search(pattern, content)
+        if m:
+            rc = int(m.group(2))
+            builder.metadata["result"]["returncode"] = rc
+            logger.debug(
+                f"Test: {builder.name} got returncode: {rc} from JobID: {builder.job.jobid}"
+            )
+        else:
+            logger.debug(
+                f"Error in regular expression: '{pattern}'. Unable to find returncode please check your cobalt log file"
+            )
+
+        shutil.copy2(
+            cobaltlog, os.path.join(builder.test_root, os.path.basename(cobaltlog))
+        )
+        logger.debug(
+            f"Copying cobalt log file: {cobaltlog} to {os.path.join(builder.test_root,os.path.basename(cobaltlog))}"
+        )
+
+        builder.copy_stage_files()
+        self.check_test_state(builder)
+
+
+class CobaltJob(Job):
+    """The ``CobaltJob`` class performs operation on cobalt job upon job submission such
+    as polling job, gather job record, cancel job. We also retrieve job state and determine if job
+    is pending, running, complete, suspended.
+    """
+
+    def __init__(self, jobID):
+        super().__init__(jobID)
+        self._outfile = str(jobID) + ".output"
+        self._errfile = str(jobID) + ".error"
+        self._cobaltlog = str(jobID) + ".cobaltlog"
+
+    def is_pending(self):
+        """Return ``True`` if job is pending otherwise returns ``False``. When cobalt recieves job it is
+        in ``starting`` followed by ``queued`` state. We check if job is in either state.
+        """
+
+        return self._state in ["queued", "starting"]
+
+    def is_running(self):
+        """Return ``True`` if job is running otherwise returns ``False``. Cobalt job state for running job is
+        is marked as ``running``"""
+
+        return self._state == "running"
+
+    def is_complete(self):
+        """Return ``True`` if job is complete otherwise returns ``False``. Cobalt job state for completed job
+        job is marked as ``exiting``"""
+
+        return self._state == "exiting"
+
+    def is_suspended(self):
+        """Return ``True`` if job is suspended otherwise returns ``False``. Cobalt job state for suspended is
+        marked as ``user_hold``"""
+
+        return self._state == "user_hold"
+
+    def is_cancelled(self):
+        """Return ``True`` if job is cancelled otherwise returns ``False``. Job state is ``cancelled`` which
+        is set by class ``cancel`` method
+        """
+
+        return self._state == "cancelled"
+
+    def cobalt_log(self):
+        """Return job cobalt.log file"""
+
+        return self._cobaltlog
+
+    def output_file(self):
+        """Return job output file"""
+
+        return self._outfile
+
+    def error_file(self):
+        """Return job error file"""
+
+        return self._errfile
+
+    def exitcode(self):
+        """Return job exit code"""
+
+        return self._exitcode
+
+    def poll(self):
+        """Poll job by running ``qstat -l --header State <jobid>`` which retrieves job state."""
+
+        # get Job State by running 'qstat -l --header <jobid>'
+        query = f"qstat -l --header State {self.jobid}"
+        logger.debug(f"Getting Job State for '{self.jobid}' by running: '{query}'")
+        cmd = BuildTestCommand(query)
+        cmd.execute()
+        output = cmd.get_output()
+
+        output = " ".join(output).strip()
+
+        # Output in format State: <state> so we need to get value of state
+        job_state = output.partition(":")[2].strip()
+
+        if job_state:
+            self._state = job_state
+
+        logger.debug(f"Job ID: '{self.job}' Job State: {self._state}")
+
+    def gather(self):
+        """Gather Job state by running **qstat -lf <jobid>** which retrieves all fields.
+            The output is in text format which is parsed into key/value pair and stored in a dictionary. This method will
+            return a dict containing the job record
+
+            .. code-block:: console
+
+                 $ qstat -lf 347106
+                    JobID: 347106
+                        JobName           : hold_job
+                        User              : shahzebsiddiqui
+                        WallTime          : 00:10:00
+                        QueuedTime        : 00:13:14
+                        RunTime           : N/A
+                        TimeRemaining     : N/A
+        `
+
+        """
 
         # 'qstat -lf <jobid>' will get all fields of Job.
-        qstat_cmd = f"{self.poll_cmd} -lf {builder.metadata['jobid']}"
-        self.logger.debug(f"Executing command: {qstat_cmd}")
+        qstat_cmd = f"qstat -lf {self.jobid}"
+        logger.debug(f"Executing command: {qstat_cmd}")
         cmd = BuildTestCommand(qstat_cmd)
         cmd.execute()
         output = cmd.get_output()
@@ -126,116 +325,16 @@ class CobaltExecutor(BaseExecutor):
             value = value.strip()
             job_record[key] = value
 
-        self.logger.debug(json.dumps(job_record, indent=2))
-        builder.metadata["job"] = job_record
+        return job_record
 
-    def poll(self, builder):
-        """This method is responsible for polling Cobalt job, we check the
-        job state and existence of output file. If file exists or job is in
-        'exiting' stage we set job to 'done' stage and gather results. If job
-        is in 'pending' stage we check if job exceeds 'max_pend_time' time limit
-        by checking with builder timer attribute using ``start`` and ``stop`` method.
-        If job exceeds the time limit job is cancelled.
-
-        :param builder: builder object
-        :type builder: BuilderBase, required
+    def cancel(self):
+        """Cancel job by running ``qdel <jobid>``. This method is called if job timer exceeds
+        ``max_pend_time`` if job is pending.
         """
 
-        self.logger.debug(f"Query Job: {builder.metadata['jobid']}")
-
-        # get Job State by running 'qstat -l --header <jobid>'
-        qstat_cmd = f"{self.poll_cmd} -l --header State {builder.metadata['jobid']}"
-        self.logger.debug(f"Executing command: {qstat_cmd}")
-        cmd = BuildTestCommand(qstat_cmd)
-        cmd.execute()
-        output = cmd.get_output()
-
-        output = " ".join(output).strip()
-
-        # Output in format State: <state> so we need to get value of state
-        job_state = output.partition(":")[2].strip()
-
-        if job_state:
-            builder.job_state = job_state
-
-        self.logger.debug(
-            "[%s]: JobID %s in %s state ",
-            builder.metadata["name"],
-            builder.metadata["jobid"],
-            builder.job_state,
-        )
-
-        # additional check to see if job outputfile is written to file system.
-        # If job is in 'exiting' state we assume job is now finished, qstat will remove
-        # completed job and it can't be polled so it is likely self.job_state is undefined
-        if shutil.which(builder.metadata["outfile"]) or builder.job_state == "exiting":
-            builder.job_state = "done"
-            self.gather(builder)
-            return
-
-        if builder.job_state == "pending":
-            builder.stop()
-            self.logger.debug(f"Time Duration: {builder.duration}")
-            self.logger.debug(f"Max Pend Time: {self.max_pend_time}")
-
-            # if timer time is more than requested pend time then cancel job
-            if int(builder.duration) > self.max_pend_time:
-                self.cancel()
-                builder.job_state = "CANCELLED"
-                print(
-                    "Cancelling Job because duration time: {:f} sec exceeds max pend time: {} sec".format(
-                        builder.duration, self.max_pend_time
-                    )
-                )
-
-            builder.start()
-
-    def gather(self, builder):
-        """This method is responsible for moving output and error file in the run
-        directory. We need to read <JOBID>.cobaltlog file which contains
-        output of exit code. Cobalt doesn't provide any method to retrieve
-        exit code using account command (``qstat``) so we need to perform
-        regular expression.
-
-        :param builder: builder object
-        :type builder: BuilderBase, required
-        """
-
-        builder.metadata["output"] = read_file(builder.metadata["outfile"])
-        builder.metadata["error"] = read_file(builder.metadata["errfile"])
-
-        cobaltlog = os.path.join(
-            builder.stage_dir, str(builder.metadata["jobid"]) + ".cobaltlog"
-        )
-
-        self.end_time(builder)
-
-        self.logger.debug(f"Cobalt Log File written to {cobaltlog}")
-        if os.path.exists(cobaltlog):
-            content = read_file(cobaltlog)
-            pattern = r"(exit code of.)(\d+)(\;)"
-            # pattern to check in cobalt log file is 'exit code of <CODE>;'
-            m = re.search(pattern, content)
-            if m:
-                builder.metadata["result"]["returncode"] = int(m.group(2))
-            else:
-                self.logger.debug(
-                    f"Error in regular expression: {pattern}. Unable to find returncode please check your cobalt log file"
-                )
-
-        self.check_test_state(builder)
-
-    def cancel(self, builder):
-        """Cancel Cobalt job using qdel, this operation is performed if job exceeds its max_pend_time
-
-        :param builder: builder object
-        :type builder: BuilderBase, required
-        """
-
-        query = f"qdel {builder.metadata['jobid']}"
-
+        query = f"qdel {self.jobid}"
+        logger.debug(f"Cancelling job {self.jobid} by running: {query}")
         cmd = BuildTestCommand(query)
         cmd.execute()
-        msg = f"Cancelling Job: {builder.metadata['name']} running command: {query}"
-        print(msg)
-        self.logger.debug(msg)
+
+        self._state = "cancelled"

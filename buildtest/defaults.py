@@ -6,9 +6,6 @@ or derived here.
 import pwd
 import os
 
-logID = "buildtest"
-
-
 supported_type_schemas = ["script-v1.0.schema.json", "compiler-v1.0.schema.json"]
 
 # each has a subfolder in buildtest/buildsystem/schemas/ with *.schema.json
@@ -29,12 +26,19 @@ BUILDTEST_USER_HOME = os.path.join(userhome, ".buildtest")
 # dictionary used for storing status of builds
 USER_SETTINGS_FILE = os.path.join(BUILDTEST_USER_HOME, "config.yml")
 
-var_root = os.path.join(BUILDTEST_ROOT, "var")
-executor_root = os.path.join(var_root, "executors")
 
-BUILDSPEC_CACHE_FILE = os.path.join(var_root, "buildspec-cache.json")
+VAR_DIR = os.path.join(BUILDTEST_ROOT, "var")
 
-BUILD_REPORT = os.path.join(var_root, "report.json")
+BUILD_HISTORY_DIR = os.path.join(VAR_DIR, ".history")
+BUILDTEST_DEFAULT_TESTDIR = os.path.join(VAR_DIR, "tests")
+BUILDTEST_EXECUTOR_DIR = os.path.join(VAR_DIR, "executor")
+
+BUILDTEST_BUILDSPEC_DIR = os.path.join(VAR_DIR, "buildspecs")
+
+BUILDSPEC_CACHE_FILE = os.path.join(BUILDTEST_BUILDSPEC_DIR, "cache.json")
+BUILDSPEC_ERROR_FILE = os.path.join(BUILDTEST_BUILDSPEC_DIR, "error.txt")
+
+BUILD_REPORT = os.path.join(VAR_DIR, "report.json")
 
 BUILDSPEC_DEFAULT_PATH = [
     os.path.join(BUILDTEST_ROOT, "tutorials"),

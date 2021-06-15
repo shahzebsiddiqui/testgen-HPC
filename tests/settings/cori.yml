@@ -8,8 +8,8 @@ system:
         gcc: "^(gcc|PrgEnv-gnu)"
         cray: "^(PrgEnv-cray)"
         intel: "^(intel|PrgEnv-intel)"
-        pgi: "^(pgi)"
         cuda: "^(cuda\/)"
+        upcxx: "^(upcxx)"
       compiler:
         gcc:
           builtin_gcc:
@@ -50,3 +50,9 @@ system:
           options:
             - -C knl
           description: debug queue on KNL partition
+        
+        bigmem:
+          qos: bigmem
+          cluster: escori
+          description: large memory jobs
+           

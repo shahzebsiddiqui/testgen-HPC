@@ -9,12 +9,21 @@ import re
 
 from buildtest.buildsystem.scriptbuilder import ScriptBuilder
 from buildtest.buildsystem.compilerbuilder import CompilerBuilder
-from buildtest.menu.compilers import BuildtestCompilers
+from buildtest.cli.compilers import BuildtestCompilers
 from buildtest.system import system
 
 
 class Builder:
-    def __init__(self, bp, buildexecutor, filters, testdir, rebuild=1):
+    def __init__(
+        self,
+        bp,
+        buildexecutor,
+        filters,
+        testdir,
+        configuration,
+        buildtest_system=None,
+        rebuild=1,
+    ):
         """Based on a loaded Buildspec file, return the correct builder
         for each based on the type. Each type is associated with a known
         Builder class.
@@ -27,22 +36,30 @@ class Builder:
         :type filters: dict, required
         :param testdir: Test Destination directory, specified by --testdir
         :type testdir: str, required
+        :param configuration: Instance of SiteConfiguration class
+        :type configuration: SiteConfiguration
+        :param buildtest_system: Instance of BuildTestSystem
+        :type buildtest_system: BuildTestSystem
         :param rebuild: Number of rebuilds for a tesst this is specified by ``buildtest build --rebuild``. Defaults to 1
         :type rebuild: int, optional
         """
 
+        self.configuration = configuration
+        self.system = buildtest_system or system
         self.logger = logging.getLogger(__name__)
         self.testdir = testdir
         self.buildexecutor = buildexecutor
+
         if not rebuild:
             self.rebuild = 1
         else:
+            # FIX LINE BELOW
             self.rebuild = rebuild or 1
             self.rebuild = int(rebuild)
 
         self.bp = bp
         self.filters = filters
-        # system = BuildTestSystem()
+
         self.builders = []
 
         for count in range(self.rebuild):
@@ -58,11 +75,13 @@ class Builder:
                 if self._skip_tests_by_tags(recipe, name):
                     continue
 
-                if self._skip_tests_run_only(recipe, name, system):
+                if self._skip_tests_run_only(recipe, name):
                     continue
 
                 # Add the builder based on the type
                 if recipe["type"] == "script":
+                    self.builders += self._generate_builders(recipe, name)
+                    """
                     self.builders.append(
                         ScriptBuilder(
                             name=name,
@@ -72,6 +91,7 @@ class Builder:
                             testdir=self.testdir,
                         )
                     )
+                    """
                 elif recipe["type"] == "compiler":
 
                     self._build_compilers(name, recipe)
@@ -83,6 +103,68 @@ class Builder:
 
         for builder in self.builders:
             self.logger.debug(builder)
+
+    def _generate_builders(self, recipe, name, compiler_name=None):
+        """This method is responsible for generating builders by applying regular expression specified by
+        `executor` field in buildspec with list of executors. If their is a match we generate a builder.
+
+        :param name: Name of test in buildspec file
+        :type name: str
+        :param recipe: Loaded test recipe from a test section.
+        :type recipe: dict
+        :param compiler_name: Name of compiler
+        :type compiler_name: str, optional
+        :return: A list of builder objects
+        :type recipe: object
+
+
+        """
+        builders = []
+        self.logger.debug(
+            f"Searching for builders for test: {name} by applying regular expression with available builders: {self.buildexecutor.list_executors()} "
+        )
+        for executor in self.buildexecutor.list_executors():
+            builder = None
+
+            if (
+                re.fullmatch(recipe.get("executor"), executor)
+                and recipe["type"] == "script"
+            ):
+                self.logger.debug(
+                    f"Found a match in buildspec with available executors via re.fullmatch({recipe.get('executor')},{executor})"
+                )
+                builder = ScriptBuilder(
+                    name=name,
+                    recipe=recipe,
+                    executor=executor,
+                    buildspec=self.bp.buildspec,
+                    buildexecutor=self.buildexecutor,
+                    testdir=self.testdir,
+                )
+
+            elif (
+                re.fullmatch(recipe.get("executor"), executor)
+                and recipe["type"] == "compiler"
+            ):
+                self.logger.debug(
+                    f"Found a match in buildspec with available executors via re.fullmatch({recipe.get('executor')},{executor})"
+                )
+                builder = CompilerBuilder(
+                    name=name,
+                    recipe=recipe,
+                    executor=executor,
+                    compiler=compiler_name,
+                    buildspec=self.bp.buildspec,
+                    configuration=self.configuration,
+                    buildexecutor=self.buildexecutor,
+                    testdir=self.testdir,
+                )
+
+            if builder:
+                self.logger.debug(builder)
+                builders.append(builder)
+
+        return builders
 
     def _build_compilers(self, name, recipe):
         """This method will perform regular expression with 'name' field in compilers
@@ -96,7 +178,8 @@ class Builder:
         :type recipe: dict
         """
         self.compilers = {}
-        bc = BuildtestCompilers()
+
+        bc = BuildtestCompilers(configuration=self.configuration)
         discovered_compilers = bc.list()
 
         builders = []
@@ -113,15 +196,12 @@ class Builder:
         for compiler_pattern in recipe["compilers"]["name"]:
             for bc_name in discovered_compilers:
                 if re.match(compiler_pattern, bc_name):
-                    builder = CompilerBuilder(
-                        name=name,
-                        recipe=recipe,
-                        buildspec=self.bp.buildspec,
-                        buildexecutor=self.buildexecutor,
-                        compiler=bc_name,
-                        testdir=self.testdir,
+
+                    builder = self._generate_builders(
+                        name=name, recipe=recipe, compiler_name=bc_name
                     )
-                    builders.append(builder)
+
+                    builders += builder
 
         if not builders:
             msg = f"[{name}][{self.bp.buildspec}]: Unable to find any compilers based on regular expression: {recipe['compilers']['name']} so no tests were created."
@@ -138,7 +218,9 @@ class Builder:
 
 
         :param recipe: loaded buildspec recipe as dictionary
+        :type recipe: dict
         :param name: An instance of test from buildspec file
+        :type name: str
         :return: Returns a boolean True/False which determines if test is skipped.
         :rtype: bool
         """
@@ -161,7 +243,7 @@ class Builder:
 
         return False
 
-    def _skip_tests_run_only(self, recipe, name, system):
+    def _skip_tests_run_only(self, recipe, name):
         """This method will skip tests based on ``run_only`` field from buildspec. Checks
         are performed based on conditionals and if any conditional is not met we skip test.
 
@@ -169,8 +251,6 @@ class Builder:
         :type recipe: dict, required
         :param name: name of test from buildspec file
         :type name: str, required
-        :param system: An instance of ``BuildTestSystem`` class
-        :type system: BuildTestSystem, required
         :return: Returns a boolean to see if test is skipped based on ``run_only`` property
         :rtype: bool
         """
@@ -179,9 +259,10 @@ class Builder:
 
             # skip test if host scheduler is not one specified via 'scheduler' field
             if recipe["run_only"].get("scheduler") and (
-                recipe["run_only"].get("scheduler") not in system.system["scheduler"]
+                recipe["run_only"].get("scheduler")
+                not in self.system.system["scheduler"]
             ):
-                msg = f"[{name}][{self.bp.buildspec}]: test is skipped because ['run_only']['scheduler'] got value: {recipe['run_only']['scheduler']} but detected scheduler: {system.system['scheduler']}."
+                msg = f"[{name}][{self.bp.buildspec}]: test is skipped because ['run_only']['scheduler'] got value: {recipe['run_only']['scheduler']} but detected scheduler: {self.system.system['scheduler']}."
                 print(msg)
                 self.logger.info(msg)
                 return True
@@ -197,17 +278,17 @@ class Builder:
 
             # skip test if host platform is not equal to value specified by 'platform' field
             if recipe["run_only"].get("platform") and (
-                recipe["run_only"].get("platform") != system.system["platform"]
+                recipe["run_only"].get("platform") != self.system.system["platform"]
             ):
-                msg = f"[{name}][{self.bp.buildspec}]: test is skipped because this test is expected to run on platform: {recipe['run_only']['platform']} but detected platform: {system.system['platform']}."
+                msg = f"[{name}][{self.bp.buildspec}]: test is skipped because this test is expected to run on platform: {recipe['run_only']['platform']} but detected platform: {self.system.system['platform']}."
                 print(msg)
                 self.logger.info(msg)
                 return True
 
             # skip test if host platform is not equal to value specified by 'platform' field
             if recipe["run_only"].get("linux_distro"):
-                if system.system["os"] not in recipe["run_only"]["linux_distro"]:
-                    msg = f"[{name}][{self.bp.buildspec}]: test is skipped because this test is expected to run on linux distro: {recipe['run_only']['linux_distro']} but detected linux distro: {system.system['os']}."
+                if self.system.system["os"] not in recipe["run_only"]["linux_distro"]:
+                    msg = f"[{name}][{self.bp.buildspec}]: test is skipped because this test is expected to run on linux distro: {recipe['run_only']['linux_distro']} but detected linux distro: {self.system.system['os']}."
                     print(msg)
                     self.logger.info(msg)
                     return True
